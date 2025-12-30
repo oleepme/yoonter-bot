@@ -1,3 +1,6 @@
+console.log("BOOT_OK");
+
+
 const { Client, GatewayIntentBits } = require("discord.js");
 
 const client = new Client({
@@ -13,3 +16,4 @@ client.once("ready", () => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
