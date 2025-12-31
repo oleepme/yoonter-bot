@@ -1,10 +1,15 @@
-
 // src/party/handler.js
 const { InteractionType } = require("discord.js");
 const { PARTY_BOARD_CHANNEL_ID } = require("../config");
-const { upsertParty, getParty, setMemberNote, removeMember, deleteParty, listActiveParties } = require("../db");
+const {
+  upsertParty,
+  getParty,
+  setMemberNote,
+  removeMember,
+  deleteParty,
+  listActiveParties, // index.js에서 쓰는 경우가 있어 유지
+} = require("../db");
 
-// 네 프로젝트에 이미 쓰던 경로 유지
 const { logEmbed, field } = require("../discord/log");
 const { safeTrim } = require("../discord/util");
 
@@ -37,13 +42,14 @@ async function ackUpdate(interaction) {
 }
 
 async function ackModal(interaction) {
+  // 모달 submit은 응답 강제 → 최소 응답으로 시작
   if (!interaction.deferred && !interaction.replied) {
     await interaction.reply({ content: OK_BLANK, ephemeral: true }).catch(() => {});
   }
 }
 
 async function doneModal(interaction) {
-  // “빈 에페메랄”이 남는 걸 최소화하려고, 짧게 덮어쓰고 종료
+  // “빈 에페메랄” 잔상 최소화용
   try {
     await interaction.editReply({ content: OK_BLANK }).catch(() => {});
   } catch {}
@@ -159,8 +165,7 @@ function buildPartyEmbed(party) {
   const secondLine = titleText ? `${icon} ${label} — ${titleText}` : `${icon} ${label}`;
 
   return {
-    color:
-      party.status === "PLAYING" ? 0x2ecc71 : party.status === "ENDED" ? 0x95a5a6 : 0xe74c3c,
+    color: party.status === "PLAYING" ? 0x2ecc71 : party.status === "ENDED" ? 0x95a5a6 : 0xe74c3c,
     title: `${statusLabel(party.status)}\n${secondLine}`,
     fields: [
       { name: "특이사항", value: (party.party_note ?? "").toString().trim() || "(없음)", inline: false },
@@ -254,7 +259,6 @@ async function resolveUserIds(guild, input) {
     else nameTokens.push(t);
   }
 
-  // 캐시 보강
   try {
     await guild.members.fetch();
   } catch {}
@@ -263,16 +267,10 @@ async function resolveUserIds(guild, input) {
 
   for (const name of nameTokens) {
     const q = name.toLowerCase();
+    const matches = guild.members.cache.filter((m) => (m.displayName ?? "").toLowerCase().includes(q));
 
-    const matches = guild.members.cache.filter((m) =>
-      (m.displayName ?? "").toLowerCase().includes(q)
-    );
-
-    if (matches.size === 1) {
-      resolved.add(matches.first().id);
-    } else {
-      unresolved.push(name);
-    }
+    if (matches.size === 1) resolved.add(matches.first().id);
+    else unresolved.push(name);
   }
 
   return { userIds: [...resolved], unresolved };
@@ -283,27 +281,20 @@ async function handleParty(interaction) {
   const guild = interaction.guild;
   if (!guild) return false;
 
-  // 1) 현황판 종류 버튼 → 바로 모달 (에페메랄 0)
-// 대기 해지 (참가 전환 아님: 대기 목록에서 제거)
-if (interaction.customId === "party:waitoff") {
-  await ackUpdate(interaction);
-
-  const me = (party.members ?? []).find((m) => m.user_id === interaction.user.id);
-  if (!me || !isWaiting(me.note)) {
-    await ephemeralError(interaction, "대기 상태가 아닙니다.");
+  /**
+   * 0) 현황판 버튼(게임/영화/수다/노래)
+   * - 반드시 showModal을 “최우선”으로 실행해서 3초 상호작용 실패를 막는다.
+   * - DB 조회 금지 (현황판 메시지는 DB에 party row가 없음)
+   */
+  if (interaction.isButton() && interaction.customId.startsWith("party:create:")) {
+    const kind = interaction.customId.split(":")[2]; // GAME/MOVIE/CHAT/MUSIC
+    await interaction.showModal(createPartyModal(kind)).catch(() => {});
     return true;
   }
 
-  // ✅ 핵심: WAIT 접두어 제거가 아니라, '대기자 기록' 자체를 삭제 = 줄에서 빠짐
-  await removeMember(msgId, interaction.user.id);
-
-  const updated = await getParty(msgId);
-  if (updated) await refreshPartyMessage(guild, updated);
-
-  return true;
-}
-
-  // 2) 생성 모달 제출
+  /**
+   * 1) 생성 모달 제출
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:create:submit:")) {
     await ackModal(interaction);
 
@@ -311,7 +302,7 @@ if (interaction.customId === "party:waitoff") {
 
     try {
       const note = safeTrim(interaction.fields.getTextInputValue("note"));
-      const time = safeTrim(interaction.fields.getTextInputValue("time")); // 비우면 모바시 처리
+      const time = safeTrim(interaction.fields.getTextInputValue("time"));
       const title = safeTrim(interaction.fields.getTextInputValue("title"));
 
       if (!isUnlimitedKind(kind) && !title) {
@@ -328,7 +319,7 @@ if (interaction.customId === "party:waitoff") {
         }
         maxPlayers = parsed;
       } else {
-        maxPlayers = 0; // ✅ 무제한은 0 고정 (NULL 금지)
+        maxPlayers = 0; // 무제한은 0 고정
       }
 
       const board = await guild.channels.fetch(PARTY_BOARD_CHANNEL_ID).catch(() => null);
@@ -337,7 +328,7 @@ if (interaction.customId === "party:waitoff") {
         return true;
       }
 
-      // ✅ 텍스트 메시지 금지: embed-only
+      // embed-only 생성
       const msg = await board.send({ embeds: [buildCreatingEmbed(kind)], components: [] });
 
       await upsertParty({
@@ -355,7 +346,7 @@ if (interaction.customId === "party:waitoff") {
         max_players: maxPlayers,
       });
 
-      // 파티장 자동 참가 (플레이 슬롯)
+      // 파티장 자동 참가(플레이)
       await setMemberNote(msg.id, interaction.user.id, "");
 
       const party = await getParty(msg.id);
@@ -374,13 +365,15 @@ if (interaction.customId === "party:waitoff") {
 
       await doneModal(interaction);
       return true;
-    } catch (e) {
+    } catch {
       await ephemeralError(interaction, "파티 생성 처리 중 오류가 발생했습니다.");
       return true;
     }
   }
 
-  // 3) 파티 메시지 버튼 처리
+  /**
+   * 2) 파티 주문서(파티 메시지) 버튼 처리
+   */
   if (interaction.isButton() && interaction.customId.startsWith("party:")) {
     const msgId = interaction.message?.id;
     if (!msgId) {
@@ -406,13 +399,13 @@ if (interaction.customId === "party:waitoff") {
       return true;
     }
 
-    // 대기(모달로 코멘트 받기)
+    // 대기(코멘트)
     if (interaction.customId === "party:wait") {
       await interaction.showModal(waitModal(msgId)).catch(() => {});
       return true;
     }
 
-    // 대기 해지
+    // ✅ 대기 해지 = 줄에서 나가기 (참가 전환 아님)
     if (interaction.customId === "party:waitoff") {
       await ackUpdate(interaction);
 
@@ -422,13 +415,14 @@ if (interaction.customId === "party:waitoff") {
         return true;
       }
 
-      await setMemberNote(msgId, interaction.user.id, stripWaitPrefix(me.note));
+      await removeMember(msgId, interaction.user.id);
+
       const updated = await getParty(msgId);
       if (updated) await refreshPartyMessage(guild, updated);
       return true;
     }
 
-    // 나가기 (대기/플레이 공통)
+    // 나가기(대기/플레이 공통)
     if (interaction.customId === "party:leave") {
       await ackUpdate(interaction);
 
@@ -444,7 +438,7 @@ if (interaction.customId === "party:waitoff") {
       return true;
     }
 
-    // 수정 (파티장/운영진)
+    // 수정(파티장/운영진)
     if (interaction.customId === "party:edit") {
       const ok = interaction.user.id === party.owner_id || isAdmin(interaction);
       if (!ok) {
@@ -455,7 +449,7 @@ if (interaction.customId === "party:waitoff") {
       return true;
     }
 
-    // 시작/종료 (요구사항: 파티원도 가능 + 운영진 가능)
+    // 시작/종료(파티원/파티장/운영진)
     if (interaction.customId === "party:start" || interaction.customId === "party:end") {
       const isMember = (party.members ?? []).some((m) => m.user_id === interaction.user.id);
       const ok = isMember || interaction.user.id === party.owner_id || isAdmin(interaction);
@@ -477,7 +471,7 @@ if (interaction.customId === "party:waitoff") {
       return true;
     }
 
-    // 운영진 관리(강제참가)
+    // 운영진 강제참가(모달)
     if (interaction.customId === "party:admin") {
       if (!isAdmin(interaction)) {
         await ephemeralError(interaction, "운영진만 사용할 수 있습니다.");
@@ -509,7 +503,9 @@ if (interaction.customId === "party:waitoff") {
     return false;
   }
 
-  // 4) 참가/비고 모달 제출
+  /**
+   * 3) 참가/비고 모달 제출
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:joinnote:")) {
     await ackModal(interaction);
 
@@ -531,9 +527,7 @@ if (interaction.customId === "party:waitoff") {
       // GAME만 정원 체크(대기 제외)
       if (!isUnlimitedKind(party.kind)) {
         const maxPlayers = Number(party.max_players) || 4;
-        const existsAsPlaying = (party.members ?? []).some(
-          (m) => m.user_id === interaction.user.id && !isWaiting(m.note)
-        );
+        const existsAsPlaying = (party.members ?? []).some((m) => m.user_id === interaction.user.id && !isWaiting(m.note));
         const count = playingCount(party);
         if (!existsAsPlaying && count >= maxPlayers) {
           await ephemeralError(interaction, `이미 정원이 찼습니다. (최대 ${maxPlayers}명)`);
@@ -559,7 +553,9 @@ if (interaction.customId === "party:waitoff") {
     }
   }
 
-  // 5) 대기 모달 제출
+  /**
+   * 4) 대기 모달 제출
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:wait:submit:")) {
     await ackModal(interaction);
 
@@ -590,7 +586,9 @@ if (interaction.customId === "party:waitoff") {
     }
   }
 
-  // 6) 수정 모달 제출
+  /**
+   * 5) 수정 모달 제출
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:edit:submit:")) {
     await ackModal(interaction);
 
@@ -658,7 +656,9 @@ if (interaction.customId === "party:waitoff") {
     }
   }
 
-  // 7) 운영진 강제참가 모달
+  /**
+   * 6) 운영진 강제참가 모달
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:admin:forcejoin:")) {
     await ackModal(interaction);
 
@@ -742,9 +742,8 @@ async function syncOrderMessage(guild, messageId) {
   await refreshPartyMessage(guild, party);
 }
 
-// 지금은 time_text를 검증/자동전환하지 않기로 했으니 no-op (안전)
 async function runPartyTick(client) {
-  // 필요 시 나중에 확장
+  // 필요 시 확장
   return;
 }
 
@@ -753,5 +752,3 @@ module.exports = {
   syncOrderMessage,
   runPartyTick,
 };
-
-
