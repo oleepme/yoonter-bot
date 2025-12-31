@@ -129,5 +129,3 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
-
-
