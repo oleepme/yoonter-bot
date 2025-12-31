@@ -30,7 +30,10 @@ function partyBoardEmbed() {
 function partyBoardComponents() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("party:create").setLabel("➕ 새 파티 만들기").setStyle(ButtonStyle.Success)
+      new ButtonBuilder()
+        .setCustomId("party:create")
+        .setLabel("➕ 새 파티 만들기")
+        .setStyle(ButtonStyle.Success)
     ),
   ];
 }
@@ -56,7 +59,10 @@ function cancelRow(customId) {
 }
 
 function createPartyModal(kind) {
-  const modal = new ModalBuilder().setCustomId(`party:create:submit:${kind}`).setTitle("새 파티 만들기");
+  const modal = new ModalBuilder()
+    .setCustomId(`party:create:submit:${kind}`)
+    .setTitle("새 파티 만들기");
+
   const rows = [];
 
   // ✅ GAME/MOVIE만 이름 입력 (기존 정책 유지)
@@ -88,7 +94,10 @@ function createPartyModal(kind) {
     .setStyle(TextInputStyle.Short)
     .setRequired(false);
 
-  rows.push(new ActionRowBuilder().addComponents(note), new ActionRowBuilder().addComponents(time));
+  rows.push(
+    new ActionRowBuilder().addComponents(note),
+    new ActionRowBuilder().addComponents(time)
+  );
 
   // ✅ GAME만 인원제한 입력칸 노출
   if (!isUnlimitedKind(kind)) {
@@ -97,3 +106,128 @@ function createPartyModal(kind) {
       .setLabel("인원제한(숫자)")
       .setStyle(TextInputStyle.Short)
       .setRequired(true);
+    rows.push(new ActionRowBuilder().addComponents(max));
+  }
+
+  modal.addComponents(...rows);
+  return modal;
+}
+
+function editPartyModal(messageId, kind, partyRow) {
+  const modal = new ModalBuilder()
+    .setCustomId(`party:edit:submit:${messageId}:${kind}`)
+    .setTitle("파티 수정");
+
+  const rows = [];
+
+  // ✅ GAME/MOVIE만 이름 입력
+  if (kind === "GAME") {
+    const title = new TextInputBuilder()
+      .setCustomId("title")
+      .setLabel("게임")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue((partyRow.title ?? "").toString().slice(0, 100));
+    rows.push(new ActionRowBuilder().addComponents(title));
+  } else if (kind === "MOVIE") {
+    const title = new TextInputBuilder()
+      .setCustomId("title")
+      .setLabel("영화이름")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue((partyRow.title ?? "").toString().slice(0, 100));
+    rows.push(new ActionRowBuilder().addComponents(title));
+  }
+
+  const note = new TextInputBuilder()
+    .setCustomId("note")
+    .setLabel("특이사항")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setValue((partyRow.party_note ?? "").toString().slice(0, 4000));
+
+  const time = new TextInputBuilder()
+    .setCustomId("time")
+    .setLabel("시간 (예: 오후3시/저녁9시/모바시) — 비우면 모바시")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setValue((partyRow.time_text ?? "").toString().slice(0, 200));
+
+  rows.push(
+    new ActionRowBuilder().addComponents(note),
+    new ActionRowBuilder().addComponents(time)
+  );
+
+  // ✅ GAME만 인원제한 입력칸 노출
+  if (!isUnlimitedKind(kind)) {
+    const max = new TextInputBuilder()
+      .setCustomId("max")
+      .setLabel("인원제한(숫자)")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue(String(partyRow.max_players ?? 4));
+    rows.push(new ActionRowBuilder().addComponents(max));
+  }
+
+  modal.addComponents(...rows);
+  return modal;
+}
+
+function partyActionRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("party:join").setLabel("참가/비고").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("party:leave").setLabel("나가기").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("party:edit").setLabel("수정").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("party:start").setLabel("시작").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("party:end").setLabel("종료").setStyle(ButtonStyle.Danger)
+  );
+}
+
+function endedActionRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("party:delete").setLabel("🗑 삭제").setStyle(ButtonStyle.Danger)
+  );
+}
+
+function joinNoteModal(msgId) {
+  const modal = new ModalBuilder().setCustomId(`party:joinnote:${msgId}`).setTitle("참가 비고(선택)");
+
+  const input = new TextInputBuilder()
+    .setCustomId("note")
+    .setLabel("비고 예: 10시참/늦참/뉴비")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
+function kindLabel(kind) {
+  if (kind === "GAME") return "게임";
+  if (kind === "MOVIE") return "영화";
+  if (kind === "CHAT") return "수다";
+  if (kind === "MUSIC") return "노래";
+  return "게임";
+}
+
+function kindIcon(kind) {
+  if (kind === "CHAT") return "💬";
+  if (kind === "MOVIE") return "🎬";
+  if (kind === "MUSIC") return "🎤";
+  return "🎮";
+}
+
+module.exports = {
+  isUnlimitedKind,
+  partyBoardEmbed,
+  partyBoardComponents,
+  kindSelectRow,
+  cancelRow,
+  createPartyModal,
+  editPartyModal,
+  partyActionRow,
+  endedActionRow,
+  joinNoteModal,
+  kindLabel,
+  kindIcon,
+};
