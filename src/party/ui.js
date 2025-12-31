@@ -195,10 +195,10 @@ function joinNoteModal(msgId) {
 }
 
 function kindLabel(kind) {
-  if (kind === "GAME") return "🎮게임";
-  if (kind === "MOVIE") return "🎬영화";
-  if (kind === "CHAT") return "💬수다";
-  if (kind === "MUSIC") return "🎤노래";
+  if (kind === "GAME") return "게임";
+  if (kind === "MOVIE") return "영화";
+  if (kind === "CHAT") return "수다";
+  if (kind === "MUSIC") return "노래";
   return "게임";
 }
 
