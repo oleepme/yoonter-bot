@@ -1,3 +1,4 @@
+// src/party/ui.js
 const {
   EmbedBuilder,
   ActionRowBuilder,
@@ -8,7 +9,6 @@ const {
   TextInputBuilder,
   TextInputStyle
 } = require("discord.js");
-const { buildMeta } = require("./meta");
 
 const KIND_OPTIONS = [
   { label: "게임", value: "게임", emoji: "🎮" },
@@ -26,8 +26,8 @@ function partyBoardEmbed() {
       "- 상시 운영",
       "- 종료 버튼 누르면 삭제",
       "- 상세 로그는 운영진 채널에만 기록"
-    ].join("\n"))
-    .setFooter({ text: "DDG|partyboard|v1" });
+    ].join("\n"));
+  // footer 메타 금지
 }
 
 function partyBoardComponents() {
@@ -52,13 +52,13 @@ function detailsModal() {
 
   const title = new TextInputBuilder()
     .setCustomId("title")
-    .setLabel("카테고리 2: 게임/종류")
+    .setLabel("게임 이름")
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
   const note = new TextInputBuilder()
     .setCustomId("note")
-    .setLabel("카테고리 3: 특이사항(선택)")
+    .setLabel("주문서 특이사항(선택)")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
 
@@ -106,51 +106,59 @@ function joinNoteModal(msgId) {
   const modal = new ModalBuilder().setCustomId(`party:joinnote:${msgId}`).setTitle("참가 비고(선택)");
   const input = new TextInputBuilder()
     .setCustomId("note")
-    .setLabel("비고(선택) 예: 늦참10 / 마이크X / 뉴비")
+    .setLabel("비고(선택) 예: 늦참10 / 마이크X")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
   modal.addComponents(new ActionRowBuilder().addComponents(input));
   return modal;
 }
 
-function statusLabel(status) {
-  return status === "PLAYING" ? "🟢 게임중" : "🔴 모집중";
+function statusText(status) {
+  if (status === "PLAYING") return "플레이중";
+  if (status === "ENDED") return "종료";
+  return "모집중";
 }
 
-function buildPartyEmbed({ ownerId, ownerRoleLabel, kind, title, note, mode, startAtUnix, status, members }) {
-  const kindEmoji = KIND_OPTIONS.find(o => o.value === kind)?.emoji ?? "📌";
-  const startLine = mode === "ASAP"
-    ? "⚡ 모이면 바로 시작"
-    : `🕒 <t:${startAtUnix}:F> ( <t:${startAtUnix}:R> )`;
+function startText(mode, startAtUnix) {
+  if (mode === "ASAP") return "⚡ 모이면 바로 시작";
+  return `🕒 <t:${startAtUnix}:t> ( <t:${startAtUnix}:R> )`;
+}
 
-  const noteLine = note?.trim() ? note.trim() : "(없음)";
-  const memberLines = (members?.length ? members : [{ userId: ownerId, note: "" }])
-    .map(m => `- <@${m.userId}>${m.note ? ` — ${m.note}` : ""}`)
-    .join("\n");
+function buildPartyEmbedFromDb(party) {
+  const {
+    status,
+    title,
+    party_note,
+    mode,
+    start_at,
+    max_players,
+    members
+  } = party;
+
+  const noteLine = (party_note && party_note.trim()) ? party_note.trim() : "(없음)";
+  const timeLine = startText(mode, Number(start_at));
+
+  const slots = [];
+  const list = Array.isArray(members) ? members : [];
+  for (let i = 0; i < (max_players || 4); i++) {
+    const m = list[i];
+    if (!m) slots.push(`${i + 1}.`);
+    else slots.push(`${i + 1}. <@${m.user_id}>${m.note ? ` — ${m.note}` : ""}`);
+  }
 
   return new EmbedBuilder()
-    .setColor(status === "PLAYING" ? 0x2ecc71 : 0xe74c3c)
-    .setTitle(`${kindEmoji} ${kind}`)
-    .setDescription([
-      `🎯 **${title}**`,
-      ownerRoleLabel ? `👤 파티장: <@${ownerId}> (${ownerRoleLabel})` : `👤 파티장: <@${ownerId}>`
-    ].join("\n"))
+    .setColor(status === "PLAYING" ? 0x2ecc71 : status === "ENDED" ? 0x95a5a6 : 0xe74c3c)
+    // 상단 1줄: 상태
+    .setTitle(statusText(status))
+    // 상단 2줄: 🎮 게임 이름
+    .setDescription(`🎮 ${title}`)
+    // 1행(2칸): 특이사항/시간
     .addFields(
-      { name: "상태", value: statusLabel(status), inline: true },
-      { name: "시작", value: startLine, inline: true },
-      { name: "특이사항", value: noteLine, inline: false },
-      { name: "참가자", value: memberLines, inline: false }
-    )
-    .setFooter({
-      text: buildMeta({
-        owner: ownerId,
-        ownerRole: ownerRoleLabel || "",
-        kind,
-        mode,
-        startAt: String(startAtUnix),
-        status
-      })
-    });
+      { name: "주문서 특이사항", value: noteLine, inline: true },
+      { name: "시간", value: timeLine, inline: true },
+      // 2행(1칸): 참가자 목록
+      { name: "참가자", value: slots.join("\n"), inline: false }
+    );
 }
 
 module.exports = {
@@ -163,5 +171,5 @@ module.exports = {
   minuteSelectRow,
   partyActionRow,
   joinNoteModal,
-  buildPartyEmbed
+  buildPartyEmbedFromDb,
 };

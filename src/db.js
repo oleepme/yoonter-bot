@@ -20,10 +20,11 @@ async function initDb() {
       title       TEXT NOT NULL,
       party_note  TEXT DEFAULT '',
       mode        TEXT NOT NULL,      -- 'TIME' | 'ASAP'
-      start_at    BIGINT NOT NULL,    -- unix seconds
-      status      TEXT NOT NULL,      -- 'RECRUIT' | 'PLAYING'
+      start_at    BIGINT NOT NULL,    -- unix seconds (UTC timestamp)
+      status      TEXT NOT NULL,      -- 'RECRUIT' | 'PLAYING' | 'ENDED'
       max_players INT  NOT NULL DEFAULT 4,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 
@@ -55,21 +56,31 @@ async function upsertParty(party) {
 
   await pool.query(
     `
-    INSERT INTO parties (message_id, channel_id, guild_id, owner_id, kind, title, party_note, mode, start_at, status, max_players)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    INSERT INTO parties
+      (message_id, channel_id, guild_id, owner_id, kind, title, party_note, mode, start_at, status, max_players)
+    VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     ON CONFLICT (message_id) DO UPDATE SET
-      channel_id = EXCLUDED.channel_id,
-      guild_id   = EXCLUDED.guild_id,
-      owner_id   = EXCLUDED.owner_id,
-      kind       = EXCLUDED.kind,
-      title      = EXCLUDED.title,
-      party_note = EXCLUDED.party_note,
-      mode       = EXCLUDED.mode,
-      start_at   = EXCLUDED.start_at,
-      status     = EXCLUDED.status,
-      max_players= EXCLUDED.max_players
+      channel_id   = EXCLUDED.channel_id,
+      guild_id     = EXCLUDED.guild_id,
+      owner_id     = EXCLUDED.owner_id,
+      kind         = EXCLUDED.kind,
+      title        = EXCLUDED.title,
+      party_note   = EXCLUDED.party_note,
+      mode         = EXCLUDED.mode,
+      start_at     = EXCLUDED.start_at,
+      status       = EXCLUDED.status,
+      max_players  = EXCLUDED.max_players,
+      updated_at   = NOW()
     `,
     [message_id, channel_id, guild_id, owner_id, kind, title, party_note, mode, start_at, status, max_players]
+  );
+}
+
+async function setPartyStatus(messageId, status) {
+  await pool.query(
+    `UPDATE parties SET status=$2, updated_at=NOW() WHERE message_id=$1`,
+    [messageId, status]
   );
 }
 
@@ -109,6 +120,7 @@ async function getParty(messageId) {
 module.exports = {
   initDb,
   upsertParty,
+  setPartyStatus,
   getParty,
   setMemberNote,
   removeMember,
