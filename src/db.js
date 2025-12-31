@@ -10,7 +10,6 @@ const pool = new Pool({
 });
 
 async function initDb() {
-  // 기존 테이블 생성
   await pool.query(`
     CREATE TABLE IF NOT EXISTS parties (
       message_id  TEXT PRIMARY KEY,
@@ -20,10 +19,11 @@ async function initDb() {
       kind        TEXT NOT NULL,
       title       TEXT NOT NULL,
       party_note  TEXT DEFAULT '',
-      mode        TEXT NOT NULL,      -- 'TIME' | 'ASAP'
-      start_at    BIGINT NOT NULL,    -- unix seconds (TIME일 때 사용)
+      mode        TEXT NOT NULL,
+      start_at    BIGINT NOT NULL,
       status      TEXT NOT NULL,      -- 'RECRUIT' | 'PLAYING' | 'ENDED'
       max_players INT  NOT NULL DEFAULT 4,
+      time_text   TEXT DEFAULT '',
       created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
@@ -38,12 +38,8 @@ async function initDb() {
     );
   `);
 
-  // ✅ 추가 컬럼: time_text (자유 텍스트 시간 표시용)
-  // 기존 데이터 보존: ALTER TABLE IF NOT EXISTS 패턴으로 안전하게 추가
-  await pool.query(`
-    ALTER TABLE parties
-    ADD COLUMN IF NOT EXISTS time_text TEXT DEFAULT '';
-  `);
+  // 기존 DB에 time_text 컬럼 없을 수 있어서 안전하게 추가
+  await pool.query(`ALTER TABLE parties ADD COLUMN IF NOT EXISTS time_text TEXT DEFAULT '';`);
 }
 
 async function upsertParty(party) {
@@ -55,9 +51,9 @@ async function upsertParty(party) {
     kind,
     title,
     party_note = "",
-    mode,
-    start_at,
-    status,
+    mode = "TEXT",
+    start_at = 0,
+    status = "RECRUIT",
     max_players = 4,
     time_text = "",
   } = party;
@@ -129,6 +125,12 @@ async function getParty(messageId) {
   return { ...p.rows[0], members: m.rows };
 }
 
+// ✅ index.js가 기대하는 함수 (재시작 후 싱크용)
+async function listActiveParties() {
+  const r = await pool.query(`SELECT message_id FROM parties WHERE status <> 'ENDED' ORDER BY created_at DESC`);
+  return r.rows.map((x) => x.message_id);
+}
+
 module.exports = {
   initDb,
   upsertParty,
@@ -136,4 +138,5 @@ module.exports = {
   setMemberNote,
   removeMember,
   deleteParty,
+  listActiveParties,
 };
