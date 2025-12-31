@@ -1,12 +1,13 @@
 {
   "name": "yoonter-bot",
   "version": "1.0.0",
+  "description": "Discord game bot",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1"
+    "discord.js": "^14.14.1",
     "pg": "^8.11.5"
   }
 }
