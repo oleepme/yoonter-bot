@@ -1,109 +1,163 @@
 // src/party/ui.js
 const {
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
 } = require("discord.js");
 
-const KIND_OPTIONS = [
-  { label: "게임", value: "게임", emoji: "🎮" },
-  { label: "노래", value: "노래", emoji: "🎵" },
-  { label: "영화", value: "영화", emoji: "🎬" },
-  { label: "수다", value: "수다", emoji: "💬" },
-];
-
-// 1) 파티 현황판(고정 메시지) — “지저분한 설명” 최소화
 function partyBoardEmbed() {
-  return new EmbedBuilder()
-    .setColor(0x95a5a6)
-    .setTitle("📌 파티 현황판")
-    .setDescription("아래 버튼으로 새 파티를 생성합니다.");
+  return {
+    color: 0x95a5a6,
+    title: "📌 파티 현황판",
+    description: [
+      "아래 버튼으로 파티를 생성합니다.",
+      "- 상시 운영",
+      "- 종료 버튼 누르면 종료 고정(버튼 제거)",
+      "- 상세 로그는 운영진 채널에만 기록",
+    ].join("\n"),
+  };
 }
 
 function partyBoardComponents() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("party:create")
-        .setLabel("➕ 새 파티 만들기")
-        .setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId("party:create").setLabel("➕ 새 파티 만들기").setStyle(ButtonStyle.Success)
     ),
   ];
 }
 
-// 2) 생성 플로우
-function kindSelectRow() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("party:draft:kind")
-      .setPlaceholder("카테고리 1 선택")
-      .addOptions(KIND_OPTIONS.map((o) => ({ label: o.label, value: o.value, emoji: o.emoji })))
-  );
-}
+/**
+ * 파티 생성 모달 (한 번에 끝)
+ * - game: 게임 이름(필수)
+ * - note: 주문서 특이사항(선택)
+ * - mode: ASAP/TIME (필수)
+ * - time: TIME일 때 HH:mm (선택)
+ * - max: 최대인원(필수)
+ */
+function createPartyModal() {
+  const modal = new ModalBuilder().setCustomId("party:create:submit").setTitle("새 파티 만들기");
 
-function detailsModal() {
-  const modal = new ModalBuilder().setCustomId("party:draft:details").setTitle("파티 정보 입력");
-
-  const title = new TextInputBuilder()
-    .setCustomId("title")
-    .setLabel("게임 이름")
+  const game = new TextInputBuilder()
+    .setCustomId("game")
+    .setLabel("🎮 게임 이름")
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
   const note = new TextInputBuilder()
     .setCustomId("note")
-    .setLabel("특이사항(선택)")
+    .setLabel("주문서 특이사항(선택)")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
 
-  modal.addComponents(new ActionRowBuilder().addComponents(title), new ActionRowBuilder().addComponents(note));
+  const mode = new TextInputBuilder()
+    .setCustomId("mode")
+    .setLabel("시작 방식: ASAP 또는 TIME")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  const time = new TextInputBuilder()
+    .setCustomId("time")
+    .setLabel("TIME일 때 시작시간 (HH:mm) / ASAP이면 비워도 됨")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+
+  const max = new TextInputBuilder()
+    .setCustomId("max")
+    .setLabel("최대 인원(숫자)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(game),
+    new ActionRowBuilder().addComponents(note),
+    new ActionRowBuilder().addComponents(mode),
+    new ActionRowBuilder().addComponents(time),
+    new ActionRowBuilder().addComponents(max)
+  );
+
   return modal;
 }
 
-function timeModeRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("party:draft:asap").setLabel("⚡ 모이면 바로 시작").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("party:draft:time").setLabel("🕒 시간 지정").setStyle(ButtonStyle.Secondary)
+/**
+ * 주문서 수정 모달
+ * - note: 특이사항(선택)
+ * - mode: ASAP/TIME (필수)
+ * - time: TIME일 때 HH:mm (선택)
+ */
+function editPartyModal(messageId, partyRow) {
+  const modal = new ModalBuilder().setCustomId(`party:edit:submit:${messageId}`).setTitle("주문서 수정");
+
+  const note = new TextInputBuilder()
+    .setCustomId("note")
+    .setLabel("주문서 특이사항(선택)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  const mode = new TextInputBuilder()
+    .setCustomId("mode")
+    .setLabel("시작 방식: ASAP 또는 TIME")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  const time = new TextInputBuilder()
+    .setCustomId("time")
+    .setLabel("TIME일 때 시작시간 (HH:mm) / ASAP이면 비워도 됨")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+
+  // 기본값 세팅(가능한 범위에서만)
+  const currentNote = (partyRow.party_note ?? "").toString();
+  const currentMode = (partyRow.mode ?? "ASAP").toString().toUpperCase();
+  const currentStartAt = Number(partyRow.start_at || 0);
+
+  note.setValue(currentNote.slice(0, 4000));
+  mode.setValue(currentMode === "TIME" ? "TIME" : "ASAP");
+
+  // TIME이면 HH:mm 채워주기
+  if (currentMode === "TIME" && currentStartAt > 0) {
+    const d = new Date(currentStartAt * 1000);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    time.setValue(`${hh}:${mm}`);
+  } else {
+    time.setValue("");
+  }
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(note),
+    new ActionRowBuilder().addComponents(mode),
+    new ActionRowBuilder().addComponents(time)
   );
+
+  return modal;
 }
 
-function hourSelectRow(customId) {
-  const options = [];
-  for (let h = 0; h <= 23; h++) options.push({ label: `${String(h).padStart(2, "0")}시`, value: String(h) });
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder("시 선택").addOptions(options)
-  );
-}
-
-function minuteSelectRow(customId) {
-  const options = [];
-  for (let m = 0; m < 60; m += 5) options.push({ label: `${String(m).padStart(2, "0")}분`, value: String(m) });
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder("분(5분 단위) 선택").addOptions(options)
-  );
-}
-
-// 3) 파티 메시지 버튼
+/**
+ * 파티 주문서 버튼들
+ * - 시간변경 제거
+ * - 수정 버튼 추가
+ */
 function partyActionRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("party:join").setLabel("참가/비고").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("party:leave").setLabel("나가기").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("party:time").setLabel("시간변경").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("party:edit").setLabel("수정").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("party:start").setLabel("시작").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("party:end").setLabel("종료").setStyle(ButtonStyle.Danger)
   );
 }
 
+/**
+ * 참가/비고 모달
+ */
 function joinNoteModal(msgId) {
   const modal = new ModalBuilder().setCustomId(`party:joinnote:${msgId}`).setTitle("참가 비고(선택)");
   const input = new TextInputBuilder()
     .setCustomId("note")
-    .setLabel("비고(선택) 예: 늦참10 / 마이크X")
+    .setLabel("비고(선택) 예: 10시참/늦참/뉴비")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
 
@@ -111,43 +165,11 @@ function joinNoteModal(msgId) {
   return modal;
 }
 
-// 4) DB -> 임베드 렌더링 (footer 메타 없음)
-function buildPartyEmbedFromDb(party) {
-  const max = Number(party.max_players || 4);
-
-  const slots = [];
-  for (let i = 0; i < max; i++) {
-    const m = party.members?.[i];
-    if (!m) slots.push(`${i + 1}.`);
-    else slots.push(`${i + 1}. <@${m.user_id}>${m.note ? ` — ${m.note}` : ""}`);
-  }
-
-  const status = party.status;
-  const statusLine = status === "PLAYING" ? "🟢 게임중" : status === "ENDED" ? "⚫ 종료" : "🔴 모집중";
-
-  const timeLine =
-    party.mode === "ASAP" ? "⚡ 모이면 바로 시작" : `🕒 <t:${Number(party.start_at)}:F> ( <t:${Number(party.start_at)}:R> )`;
-
-  return new EmbedBuilder()
-    .setColor(status === "PLAYING" ? 0x2ecc71 : status === "ENDED" ? 0x95a5a6 : 0xe74c3c)
-    .setTitle(statusLine)
-    .setDescription(`🎮 ${party.title}`)
-    .addFields(
-      { name: "특이사항", value: party.party_note?.trim() ? party.party_note.trim() : "(없음)", inline: true },
-      { name: "시간", value: timeLine, inline: true },
-      { name: "참가자", value: slots.join("\n"), inline: false }
-    );
-}
-
 module.exports = {
   partyBoardEmbed,
   partyBoardComponents,
-  kindSelectRow,
-  detailsModal,
-  timeModeRow,
-  hourSelectRow,
-  minuteSelectRow,
+  createPartyModal,
+  editPartyModal,
   partyActionRow,
   joinNoteModal,
-  buildPartyEmbedFromDb,
 };
