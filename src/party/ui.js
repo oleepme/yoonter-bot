@@ -17,6 +17,8 @@ function partyBoardEmbed() {
     .setDescription(
       [
         "아래 버튼으로 파티를 생성합니다.",
+        "- 파티는 한 메시지(임베드)로 운영 (변경은 edit)",
+        "- 종료 시 메시지는 남고 버튼만 제거됩니다.",
       ].join("\n")
     );
 }
@@ -24,111 +26,152 @@ function partyBoardEmbed() {
 function partyBoardComponents() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("party:create")
-        .setLabel("➕ 새 파티 만들기")
-        .setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId("party:create").setLabel("➕ 새 파티 만들기").setStyle(ButtonStyle.Success)
     ),
   ];
 }
 
-// 생성 모달: 게임/특이사항/최대인원 (시간칸 없음)
-function createPartyModal() {
-  const modal = new ModalBuilder().setCustomId("party:create:submit").setTitle("새 파티 만들기");
+function kindSelectRow(customId) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder("파티 종류 선택")
+      .addOptions(
+        { label: "게임", value: "GAME" },
+        { label: "영화", value: "MOVIE" },
+        { label: "수다", value: "CHAT" },
+        { label: "노래", value: "MUSIC" }
+      )
+  );
+}
 
-  const game = new TextInputBuilder()
-    .setCustomId("game")
-    .setLabel("🎮 게임 이름")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+function cancelRow(customId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(customId).setLabel("취소").setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createPartyModal(kind) {
+  const modal = new ModalBuilder().setCustomId(`party:create:submit:${kind}`).setTitle("새 파티 만들기");
+
+  const rows = [];
+
+  // 조건부: 게임/영화일 때만 이름 입력
+  if (kind === "GAME") {
+    const title = new TextInputBuilder()
+      .setCustomId("title")
+      .setLabel("게임")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    rows.push(new ActionRowBuilder().addComponents(title));
+  } else if (kind === "MOVIE") {
+    const title = new TextInputBuilder()
+      .setCustomId("title")
+      .setLabel("영화이름")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    rows.push(new ActionRowBuilder().addComponents(title));
+  }
 
   const note = new TextInputBuilder()
     .setCustomId("note")
-    .setLabel("파티 특이사항(선택)")
+    .setLabel("특이사항")
     .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  const time = new TextInputBuilder()
+    .setCustomId("time")
+    .setLabel("시간 (예: 오후3시/저녁9시/모바시) — 비우면 모바시")
+    .setStyle(TextInputStyle.Short)
     .setRequired(false);
 
   const max = new TextInputBuilder()
     .setCustomId("max")
-    .setLabel("파티 인원(숫자)")
+    .setLabel("인원제한(숫자)")
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(game),
+  rows.push(
     new ActionRowBuilder().addComponents(note),
+    new ActionRowBuilder().addComponents(time),
     new ActionRowBuilder().addComponents(max)
   );
+
+  modal.addComponents(...rows);
   return modal;
 }
 
-// 수정 모달: 게임/특이사항/인원 모두 수정 가능
-function editPartyModal(messageId, partyRow) {
-  const modal = new ModalBuilder().setCustomId(`party:edit:submit:${messageId}`).setTitle("파티 수정");
+function editKindSelectRow(customId, currentKind) {
+  // 현재 kind가 선택된 느낌은 placeholder로만 처리(Discord select는 preselect가 제한적)
+  const placeholder = `현재: ${kindLabel(currentKind)} (변경할 종류 선택)`;
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .addOptions(
+        { label: "게임", value: "GAME" },
+        { label: "영화", value: "MOVIE" },
+        { label: "수다", value: "CHAT" },
+        { label: "노래", value: "MUSIC" }
+      )
+  );
+}
 
-  const game = new TextInputBuilder()
-    .setCustomId("game")
-    .setLabel("🎮 게임 이름")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue((partyRow.title ?? "").toString().slice(0, 100));
+function editPartyModal(messageId, kind, partyRow) {
+  const modal = new ModalBuilder().setCustomId(`party:edit:submit:${messageId}:${kind}`).setTitle("파티 수정");
+
+  const rows = [];
+
+  // 조건부: 게임/영화면 이름 입력, 수다/노래면 없음
+  if (kind === "GAME") {
+    const title = new TextInputBuilder()
+      .setCustomId("title")
+      .setLabel("게임")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue((partyRow.title ?? "").toString().slice(0, 100));
+    rows.push(new ActionRowBuilder().addComponents(title));
+  } else if (kind === "MOVIE") {
+    const title = new TextInputBuilder()
+      .setCustomId("title")
+      .setLabel("영화이름")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setValue((partyRow.title ?? "").toString().slice(0, 100));
+    rows.push(new ActionRowBuilder().addComponents(title));
+  }
 
   const note = new TextInputBuilder()
     .setCustomId("note")
-    .setLabel("파티 특이사항(선택)")
+    .setLabel("특이사항")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false)
     .setValue((partyRow.party_note ?? "").toString().slice(0, 4000));
 
+  const time = new TextInputBuilder()
+    .setCustomId("time")
+    .setLabel("시간 (예: 오후3시/저녁9시/모바시) — 비우면 모바시")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setValue((partyRow.time_text ?? "").toString().slice(0, 200));
+
   const max = new TextInputBuilder()
     .setCustomId("max")
-    .setLabel("파티 인원(숫자)")
+    .setLabel("인원제한(숫자)")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setValue(String(partyRow.max_players ?? 4));
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(game),
+  rows.push(
     new ActionRowBuilder().addComponents(note),
+    new ActionRowBuilder().addComponents(time),
     new ActionRowBuilder().addComponents(max)
   );
+
+  modal.addComponents(...rows);
   return modal;
 }
 
-// 시간 선택(드롭다운): 1) 시 선택, 2) 분 선택(00/15/30/45)
-function hourSelectRow(customId) {
-  const opts = [];
-  for (let h = 0; h < 24; h++) opts.push({ label: `${String(h).padStart(2, "0")}시`, value: String(h) });
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder("시간(시) 선택").addOptions(opts)
-  );
-}
-
-function minuteSelectRow(customId) {
-  const opts = [];
-  for (let m = 0; m < 60; m += 5) {
-    const v = String(m).padStart(2, "0");
-    opts.push({ label: `${v}분`, value: v });
-  }
-
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(customId)
-      .setPlaceholder("시간(분) 선택 (5분 단위)")
-      .addOptions(opts)
-  );
-}
-
-
-// 시간 단계 공통 버튼: 모바시 / 취소
-function timeStepButtons({ mobashiId, cancelId, mobashiLabel = "⚡ 모바시로 생성", cancelLabel = "취소" }) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(mobashiId).setLabel(mobashiLabel).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(cancelId).setLabel(cancelLabel).setStyle(ButtonStyle.Secondary)
-  );
-}
-
-// 파티 메시지 액션 버튼
 function partyActionRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("party:join").setLabel("참가/비고").setStyle(ButtonStyle.Primary),
@@ -151,14 +194,31 @@ function joinNoteModal(msgId) {
   return modal;
 }
 
+function kindLabel(kind) {
+  if (kind === "GAME") return "게임";
+  if (kind === "MOVIE") return "영화";
+  if (kind === "CHAT") return "수다";
+  if (kind === "MUSIC") return "노래";
+  return "게임";
+}
+
+function kindIcon(kind) {
+  if (kind === "CHAT") return "💬";
+  if (kind === "MOVIE") return "🎬";
+  if (kind === "MUSIC") return "🎤";
+  return "🎮";
+}
+
 module.exports = {
   partyBoardEmbed,
   partyBoardComponents,
+  kindSelectRow,
+  editKindSelectRow,
+  cancelRow,
   createPartyModal,
   editPartyModal,
-  hourSelectRow,
-  minuteSelectRow,
-  timeStepButtons,
   partyActionRow,
   joinNoteModal,
+  kindLabel,
+  kindIcon,
 };
