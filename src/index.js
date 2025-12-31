@@ -1,3 +1,6 @@
+const { initDb } = require("./db");
+
+
 const http = require("http");
 const { Client, GatewayIntentBits } = require("discord.js");
 const { registerCommands } = require("./discord/registerCommands");
@@ -34,6 +37,13 @@ async function ensurePinnedMessage(channel, footerText, payloadBuilder) {
   const msg = await channel.send(payload);
   await msg.pin().catch(() => {});
 }
+
+initDb()
+  .then(() => console.log("DB_OK"))
+  .catch((e) => {
+    console.error("DB_INIT_FAIL", e);
+    process.exit(1);
+  });
 
 client.once("ready", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);

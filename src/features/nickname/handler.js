@@ -68,5 +68,3 @@ async function handleNickname(interaction) {
 }
 
 module.exports = { handleNickname };
-
-
