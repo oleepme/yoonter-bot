@@ -2,7 +2,7 @@
 const http = require("http");
 const { Client, GatewayIntentBits } = require("discord.js");
 
-const { initDb } = require("./db");
+const { initDb, listActiveParties } = require("./db");
 const { registerCommands } = require("./discord/registerCommands");
 const {
   DISCORD_TOKEN,
@@ -130,3 +130,4 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
+
