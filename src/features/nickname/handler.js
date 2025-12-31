@@ -1,6 +1,6 @@
 const { PermissionsBitField, InteractionType } = require("discord.js");
-const { logEmbed, field } = require("../discord/log");
-const { safeTrim } = require("../discord/util");
+const { logEmbed, field } = require("../../discord/log");
+const { safeTrim } = require("../../Zdiscord/util");
 const { buildNicknameModal } = require("./ui");
 
 async function handleNickname(interaction) {
@@ -68,3 +68,4 @@ async function handleNickname(interaction) {
 }
 
 module.exports = { handleNickname };
+
