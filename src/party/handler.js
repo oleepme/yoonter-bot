@@ -283,11 +283,24 @@ async function handleParty(interaction) {
   if (!guild) return false;
 
   // 1) 현황판 종류 버튼 → 바로 모달 (에페메랄 0)
-  if (interaction.isButton() && interaction.customId.startsWith("party:create:")) {
-    const kind = interaction.customId.split(":")[2]; // GAME/MOVIE/CHAT/MUSIC
-    await interaction.showModal(createPartyModal(kind)).catch(() => {});
+// 대기 해지 (참가 전환 아님: 대기 목록에서 제거)
+if (interaction.customId === "party:waitoff") {
+  await ackUpdate(interaction);
+
+  const me = (party.members ?? []).find((m) => m.user_id === interaction.user.id);
+  if (!me || !isWaiting(me.note)) {
+    await ephemeralError(interaction, "대기 상태가 아닙니다.");
     return true;
   }
+
+  // ✅ 핵심: WAIT 접두어 제거가 아니라, '대기자 기록' 자체를 삭제 = 줄에서 빠짐
+  await removeMember(msgId, interaction.user.id);
+
+  const updated = await getParty(msgId);
+  if (updated) await refreshPartyMessage(guild, updated);
+
+  return true;
+}
 
   // 2) 생성 모달 제출
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:create:submit:")) {
