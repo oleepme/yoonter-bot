@@ -1,3 +1,6 @@
+console.log("INT", interaction.customId, "MID", interaction.message?.id);
+
+
 // src/party/handler.js
 const { InteractionType } = require("discord.js");
 const { PARTY_BOARD_CHANNEL_ID } = require("../config");
@@ -752,3 +755,4 @@ module.exports = {
   syncOrderMessage,
   runPartyTick,
 };
+
