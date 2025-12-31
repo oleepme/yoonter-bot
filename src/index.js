@@ -13,7 +13,7 @@ const {
 const { partyBoardEmbed, partyBoardComponents } = require("./party/ui");
 const { nicknameBoardComponents } = require("./features/nickname/ui");
 const { handleNickname } = require("./features/nickname/handler");
-const { handleParty } = require("./features/party/handler");
+const { handleParty } = require("./party/handler");
 
 console.log("BOOT_OK");
 
@@ -99,4 +99,3 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
-
