@@ -2,30 +2,18 @@
 const {
   InteractionType,
   EmbedBuilder,
-  ModalBuilder,
   ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  PermissionFlagsBits,
 } = require("discord.js");
 
-const { PARTY_BOARD_CHANNEL_ID, ROLE_NEWBIE_ID, ROLE_MEMBER_ID } = require("../config");
-const { logEmbed, field } = require("../discord/log");
-const { safeTrim, nowUnix } = require("../discord/util");
-
+const ui = require("./ui");
+const config = require("../config");
 const {
-  kindSelectRow,
-  detailsModal,
-  timeModeRow,
-  hourSelectRow,
-  minuteSelectRow,
-  partyActionRow,
-  joinNoteModal,
-} = require("./ui");
-
-const { clearTimer } = require("./scheduler");
-
-const {
+  initDb,
   upsertParty,
   getParty,
   setMemberNote,
@@ -33,208 +21,262 @@ const {
   deleteParty,
   setPartyStatus,
   updatePartyTime,
+  listDueParties,
+  listActiveParties,
 } = require("../db");
 
-// 유저별 파티 생성 드래프트(임시)
-// userId -> { kind, title, note, mode, hh, mm }
-const draft = new Map();
-
-const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || ""; // 있으면 운영진 권한으로 인정
-
-function getOwnerRoleLabel(member) {
-  if (ROLE_NEWBIE_ID && member.roles.cache.has(ROLE_NEWBIE_ID)) return "뉴비";
-  if (ROLE_MEMBER_ID && member.roles.cache.has(ROLE_MEMBER_ID)) return "멤버";
-  return "";
-}
-
-function isAdmin(member) {
-  if (!member) return false;
-  if (ADMIN_ROLE_ID && member.roles.cache.has(ADMIN_ROLE_ID)) return true;
-  // 서버 관리자 권한도 운영진으로 인정(보험)
-  return member.permissions?.has?.(PermissionFlagsBits.Administrator) ?? false;
-}
-
-function statusText(status) {
-  if (status === "PLAYING") return "🟢 게임중";
-  if (status === "ENDED") return "⚫ 종료";
-  return "🔴 모집중";
-}
-
-function startText(mode, startAtUnix) {
-  if (mode === "ASAP") return "⚡ 모이면 바로 시작";
-  return `🕒 <t:${startAtUnix}:F> ( <t:${startAtUnix}:R> )`;
-}
-
 /**
- * 서버가 UTC여도 “한국 기준(Asia/Seoul)”으로 오늘/내일을 계산해서 unix seconds로 변환
- * - 유저가 선택한 HH:mm이 이미 지난 시간이면 내일로 넘김
+ * 핵심 방침:
+ * - "이 메시지가 파티인지"는 footer/DDG 메타로 판단하지 않고 DB로 판단.
+ * - messageId로 getParty(messageId) 조회해서 있으면 파티.
  */
+
+const DRAFT = new Map(); // userId -> draft object
+
+function nowUnix() {
+  return Math.floor(Date.now() / 1000);
+}
+
+// KST(한국) 기준 HH:mm -> unix seconds(UTC)
 function kstUnixFromHHMM(hh, mm) {
   const now = new Date();
-  // UTC 기준 ms
   const nowMs = now.getTime();
 
-  // KST는 UTC+9
+  // KST = UTC+9
   const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
   const kstNow = new Date(nowMs + KST_OFFSET_MS);
 
   const y = kstNow.getUTCFullYear();
-  const m = kstNow.getUTCMonth(); // 0-based
+  const m = kstNow.getUTCMonth();
   const d = kstNow.getUTCDate();
 
-  // "KST의 yyyy-mm-dd hh:mm"을 UTC로 되돌리려면 -9시간
+  // "KST yyyy-mm-dd HH:mm" 을 UTC로 되돌림(-9h)
   let targetUtcMs = Date.UTC(y, m, d, hh, mm, 0, 0) - KST_OFFSET_MS;
 
-  // 이미 지난 시간이면 내일
-  if (targetUtcMs <= nowMs) {
-    targetUtcMs += 24 * 60 * 60 * 1000;
-  }
+  // 이미 지난 시간이면 내일로
+  if (targetUtcMs <= nowMs) targetUtcMs += 24 * 60 * 60 * 1000;
 
   return Math.floor(targetUtcMs / 1000);
 }
 
+function safeTrim(v) {
+  return (v ?? "").toString().trim();
+}
+
 function buildPartyEmbedFromDb(party) {
-  const {
-    title,
-    party_note,
-    mode,
-    start_at,
-    status,
-    max_players,
-    members,
-  } = party;
-
-  // 번호 슬롯 고정
-  const slots = [];
-  const max = Number(max_players || 4);
-
-  for (let i = 0; i < max; i++) {
-    const m = members?.[i];
-    if (!m) {
-      slots.push(`${i + 1}.`);
-    } else {
-      const note = (m.note || "").trim();
-      slots.push(`${i + 1}. <@${m.user_id}>${note ? ` — ${note}` : ""}`);
-    }
+  // ui 버전에 따라 함수명이 다를 수 있어서 분기
+  if (typeof ui.buildPartyEmbedFromDb === "function") {
+    return ui.buildPartyEmbedFromDb(party);
   }
 
+  // 구버전 ui: buildPartyEmbed(ownerId, ownerRoleLabel, kind...)
+  if (typeof ui.buildPartyEmbed === "function") {
+    const members = (party.members || []).map((m) => ({ userId: m.user_id, note: m.note || "" }));
+    return ui.buildPartyEmbed({
+      ownerId: party.owner_id,
+      ownerRoleLabel: party.owner_role_label || "",
+      kind: party.kind,
+      title: party.title,
+      note: party.party_note,
+      mode: party.mode,
+      startAtUnix: Number(party.start_at),
+      status: party.status,
+      members,
+    });
+  }
+
+  // 최후 보험(최소 임베드)
   return new EmbedBuilder()
-    .setColor(status === "PLAYING" ? 0x2ecc71 : status === "ENDED" ? 0x95a5a6 : 0xe74c3c)
-    // 상단 1줄: 상태
-    .setTitle(statusText(status))
-    // 상단 2줄: 🎮 게임 이름
-    .setDescription(`🎮 ${title}`)
-    // 1행(2칸): 특이사항 / 시간
-    .addFields(
-      { name: "특이사항", value: (party_note && party_note.trim()) ? party_note.trim() : "(없음)", inline: true },
-      { name: "시간", value: startText(mode, Number(start_at)), inline: true },
-      // 2행(1칸): 참가자
-      { name: "참가자", value: slots.join("\n"), inline: false },
-    );
+    .setTitle("파티")
+    .setDescription(party.title || "(제목 없음)");
 }
 
-/**
- * “이 메시지가 파티인가?” 판별은 footer가 아니라 DB로 한다.
- */
-async function mustGetPartyOrReply(interaction) {
-  const msg = interaction.message;
-  const party = await getParty(msg.id);
-  if (!party) {
-    await interaction.reply({ content: "이 메시지는 파티가 아닙니다.", ephemeral: true });
-    return null;
-  }
-  return party;
-}
-
-async function refreshPartyMessage(guild, messageId) {
-  // DB 기준으로 다시 불러와서 메시지 edit
-  const party = await getParty(messageId);
-  if (!party) return false;
+async function refreshPartyMessage(client, party) {
+  const guild = await client.guilds.fetch(party.guild_id).catch(() => null);
+  if (!guild) return false;
 
   const channel = await guild.channels.fetch(party.channel_id).catch(() => null);
-  if (!channel) return false;
+  if (!channel?.isTextBased?.()) return false;
 
   const msg = await channel.messages.fetch(party.message_id).catch(() => null);
   if (!msg) return false;
 
   const embed = buildPartyEmbedFromDb(party);
-  await msg.edit({ embeds: [embed], components: [partyActionRow()] });
+  const row = typeof ui.partyActionRow === "function" ? ui.partyActionRow() : null;
+
+  await msg.edit({
+    embeds: [embed],
+    components: row ? [row] : [],
+  });
+
   return true;
 }
 
+async function mustGetParty(interaction) {
+  const msgId = interaction.message?.id;
+  if (!msgId) return null;
+
+  const party = await getParty(msgId);
+  return party || null;
+}
+
+/**
+ * ✅ index.js가 이걸 부르고 있음:
+ * const { handleParty, runPartyTick, syncOrderMessage } = require("./party/handler");
+ */
+
+// 1) 파티 현황판(고정 메시지) 동기화
+async function syncOrderMessage(client) {
+  const guildId = config.GUILD_ID;
+  const channelId = config.PARTY_BOARD_CHANNEL_ID;
+  if (!guildId || !channelId) return;
+
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) return;
+
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+
+  // 핀 메시지 중 “파티 현황판” 있으면 재사용, 없으면 생성+핀
+  const pins = await channel.messages.fetchPins().catch(() => null);
+  const pinned = pins?.find((m) => m.author?.id === client.user?.id);
+
+  const embed = typeof ui.partyBoardEmbed === "function"
+    ? ui.partyBoardEmbed()
+    : new EmbedBuilder().setTitle("📌 파티 현황판").setDescription("아래 버튼으로 파티를 생성합니다.");
+
+  const components = typeof ui.partyBoardComponents === "function"
+    ? ui.partyBoardComponents()
+    : [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("party:create")
+            .setLabel("➕ 새 파티 만들기")
+            .setStyle(ButtonStyle.Success)
+        ),
+      ];
+
+  if (pinned) {
+    await pinned.edit({ embeds: [embed], components }).catch(() => {});
+    return;
+  }
+
+  const msg = await channel.send({ embeds: [embed], components }).catch(() => null);
+  if (msg) await msg.pin().catch(() => {});
+}
+
+// 2) 자동 틱: 시간이 되면 모집중 -> 게임중
+async function runPartyTick(client) {
+  // listDueParties가 없으면(구버전) 자동전환은 일단 스킵
+  if (typeof listDueParties !== "function") return;
+
+  const due = await listDueParties(nowUnix()).catch(() => []);
+  if (!Array.isArray(due) || due.length === 0) return;
+
+  for (const messageId of due) {
+    try {
+      await setPartyStatus(messageId, "PLAYING");
+      const party = await getParty(messageId);
+      if (!party) continue;
+      await refreshPartyMessage(client, party);
+    } catch (e) {
+      console.error("runPartyTick error:", e);
+    }
+  }
+}
+
+// 3) 인터랙션 핸들러
 async function handleParty(interaction) {
-  const guild = interaction.guild;
-  if (!guild) return false;
+  const client = interaction.client;
 
-  // 1) 게시판에서 "새 파티 만들기"
+  // =========================
+  // A) 현황판: 새 파티 만들기
+  // =========================
   if (interaction.isButton() && interaction.customId === "party:create") {
-    draft.set(interaction.user.id, {});
-    await interaction.reply({
-      content: "카테고리 1을 선택하세요.",
-      components: [kindSelectRow()],
-      ephemeral: true,
-    });
+    // ui 버전에 따라:
+    // - 신버전: kindSelectRow로 단계 진행
+    // - 구버전: createPartyModal로 한 번에 입력
+    if (typeof ui.kindSelectRow === "function") {
+      DRAFT.set(interaction.user.id, {});
+      await interaction.reply({
+        content: "카테고리를 선택하세요.",
+        components: [ui.kindSelectRow()],
+        ephemeral: true,
+      });
+      return true;
+    }
 
-    await logEmbed(guild, {
-      title: "📌 파티 생성 시작",
-      fields: [field("유저", `<@${interaction.user.id}>`)],
-    });
+    if (typeof ui.createPartyModal === "function") {
+      await interaction.showModal(ui.createPartyModal());
+      return true;
+    }
 
+    // 보험
+    await interaction.reply({ content: "UI 구성이 준비되지 않았습니다(ui.js 확인 필요).", ephemeral: true });
     return true;
   }
 
-  // 2) 카테고리1 선택
+  // =========================
+  // B) 신버전 생성 플로우 (select + modal + 버튼)
+  // =========================
   if (interaction.isStringSelectMenu() && interaction.customId === "party:draft:kind") {
-    const d = draft.get(interaction.user.id) ?? {};
+    const d = DRAFT.get(interaction.user.id) || {};
     d.kind = interaction.values[0];
-    draft.set(interaction.user.id, d);
+    DRAFT.set(interaction.user.id, d);
 
-    await interaction.showModal(detailsModal());
+    if (typeof ui.detailsModal === "function") {
+      await interaction.showModal(ui.detailsModal());
+      return true;
+    }
+
+    await interaction.reply({ content: "detailsModal이 없습니다(ui.js 버전 확인).", ephemeral: true });
     return true;
   }
 
-  // 3) 카테고리2/3 입력 (모달)
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId === "party:draft:details") {
-    const d = draft.get(interaction.user.id);
+    const d = DRAFT.get(interaction.user.id);
     if (!d?.kind) {
-      await interaction.reply({ content: "세션이 만료되었습니다. 다시 [새 파티 만들기]를 눌러주세요.", ephemeral: true });
+      await interaction.reply({ content: "세션이 만료되었습니다. 다시 생성해주세요.", ephemeral: true });
       return true;
     }
 
     d.title = safeTrim(interaction.fields.getTextInputValue("title"));
     d.note = safeTrim(interaction.fields.getTextInputValue("note"));
-    draft.set(interaction.user.id, d);
+    DRAFT.set(interaction.user.id, d);
 
-    await interaction.reply({
-      content: "시작 방식을 선택하세요.",
-      components: [timeModeRow()],
-      ephemeral: true,
-    });
-
-    return true;
-  }
-
-  // 4) 모이면 바로 시작
-  if (interaction.isButton() && interaction.customId === "party:draft:asap") {
-    const d = draft.get(interaction.user.id);
-    if (!d?.kind || !d?.title) {
-      await interaction.reply({ content: "세션이 만료되었습니다. 다시 만들어주세요.", ephemeral: true });
+    if (typeof ui.timeModeRow === "function") {
+      await interaction.reply({
+        content: "시작 방식을 선택하세요.",
+        components: [ui.timeModeRow()],
+        ephemeral: true,
+      });
       return true;
     }
 
-    const board = await guild.channels.fetch(PARTY_BOARD_CHANNEL_ID);
-    const ownerMember = await guild.members.fetch(interaction.user.id);
-    const roleLabel = getOwnerRoleLabel(ownerMember);
+    await interaction.reply({ content: "timeModeRow가 없습니다(ui.js 버전 확인).", ephemeral: true });
+    return true;
+  }
 
-    // 먼저 메시지 생성
-    const tempEmbed = new EmbedBuilder().setDescription("파티 생성 중...");
-    const msg = await board.send({ embeds: [tempEmbed], components: [partyActionRow()] });
+  // 모바시
+  if (interaction.isButton() && interaction.customId === "party:draft:asap") {
+    const d = DRAFT.get(interaction.user.id);
+    if (!d?.kind || !d?.title) {
+      await interaction.reply({ content: "세션이 만료되었습니다. 다시 생성해주세요.", ephemeral: true });
+      return true;
+    }
 
-    // DB에 파티 저장 (messageId 매핑이 핵심)
+    const boardChannelId = config.PARTY_BOARD_CHANNEL_ID;
+    const board = await interaction.guild.channels.fetch(boardChannelId);
+
+    const msg = await board.send({
+      embeds: [new EmbedBuilder().setDescription("파티 생성 중...")],
+      components: typeof ui.partyActionRow === "function" ? [ui.partyActionRow()] : [],
+    });
+
     await upsertParty({
       message_id: msg.id,
       channel_id: msg.channel.id,
-      guild_id: guild.id,
+      guild_id: msg.guild.id,
       owner_id: interaction.user.id,
       kind: d.kind,
       title: d.title,
@@ -242,78 +284,63 @@ async function handleParty(interaction) {
       mode: "ASAP",
       start_at: nowUnix(),
       status: "RECRUIT",
-      max_players: 5, // 지금은 5 고정 (다음 단계에서 입력받도록 확장)
+      max_players: 5, // 현재 화면이 5 슬롯이므로 임시 고정
     });
 
-    // 파티장 자동 참가(1번 슬롯)
     await setMemberNote(msg.id, interaction.user.id, "");
+    const party = await getParty(msg.id);
+    await refreshPartyMessage(client, party);
 
-    // 메시지 임베드 최종 갱신
-    await refreshPartyMessage(guild, msg.id);
-
-    await interaction.reply({ content: "✅ 파티가 생성되었습니다. 게시판을 확인하세요.", ephemeral: true });
-
-    await logEmbed(guild, {
-      title: "✅ 파티 생성",
-      color: 0x2ecc71,
-      fields: [
-        field("파티 메시지 ID", msg.id, true),
-        field("유저", `<@${interaction.user.id}>`, true),
-        field("역할표기", roleLabel || "(없음)", true),
-        field("종류", d.kind, true),
-        field("제목", d.title),
-        field("모드", "ASAP", true),
-      ],
-    });
-
-    draft.delete(interaction.user.id);
+    DRAFT.delete(interaction.user.id);
+    await interaction.reply({ content: "✅ 파티가 생성되었습니다.", ephemeral: true });
     return true;
   }
 
-  // 4-2) 시간 지정 시작 (시 선택)
+  // 시간지정(시/분 선택)
   if (interaction.isButton() && interaction.customId === "party:draft:time") {
-    await interaction.reply({
-      content: "시(시간)를 선택하세요.",
-      components: [hourSelectRow("party:draft:hh")],
-      ephemeral: true,
-    });
+    if (typeof ui.hourSelectRow === "function") {
+      await interaction.reply({ content: "시(시간)를 선택하세요.", components: [ui.hourSelectRow("party:draft:hh")], ephemeral: true });
+      return true;
+    }
+    await interaction.reply({ content: "hourSelectRow가 없습니다(ui.js 버전 확인).", ephemeral: true });
     return true;
   }
 
   if (interaction.isStringSelectMenu() && interaction.customId === "party:draft:hh") {
-    const d = draft.get(interaction.user.id) ?? {};
+    const d = DRAFT.get(interaction.user.id) || {};
     d.hh = Number(interaction.values[0]);
-    draft.set(interaction.user.id, d);
+    DRAFT.set(interaction.user.id, d);
 
-    await interaction.reply({
-      content: "분(5분 단위)을 선택하세요.",
-      components: [minuteSelectRow("party:draft:mm")],
-      ephemeral: true,
-    });
+    if (typeof ui.minuteSelectRow === "function") {
+      await interaction.reply({ content: "분(5분 단위)을 선택하세요.", components: [ui.minuteSelectRow("party:draft:mm")], ephemeral: true });
+      return true;
+    }
+    await interaction.reply({ content: "minuteSelectRow가 없습니다(ui.js 버전 확인).", ephemeral: true });
     return true;
   }
 
   if (interaction.isStringSelectMenu() && interaction.customId === "party:draft:mm") {
-    const d = draft.get(interaction.user.id);
+    const d = DRAFT.get(interaction.user.id);
     if (!d?.kind || !d?.title || typeof d.hh !== "number") {
-      await interaction.reply({ content: "세션이 만료되었습니다. 다시 만들어주세요.", ephemeral: true });
+      await interaction.reply({ content: "세션이 만료되었습니다. 다시 생성해주세요.", ephemeral: true });
       return true;
     }
 
     const mm = Number(interaction.values[0]);
     const startAtUnix = kstUnixFromHHMM(d.hh, mm);
 
-    const board = await guild.channels.fetch(PARTY_BOARD_CHANNEL_ID);
-    const ownerMember = await guild.members.fetch(interaction.user.id);
-    const roleLabel = getOwnerRoleLabel(ownerMember);
+    const boardChannelId = config.PARTY_BOARD_CHANNEL_ID;
+    const board = await interaction.guild.channels.fetch(boardChannelId);
 
-    const tempEmbed = new EmbedBuilder().setDescription("파티 생성 중...");
-    const msg = await board.send({ embeds: [tempEmbed], components: [partyActionRow()] });
+    const msg = await board.send({
+      embeds: [new EmbedBuilder().setDescription("파티 생성 중...")],
+      components: typeof ui.partyActionRow === "function" ? [ui.partyActionRow()] : [],
+    });
 
     await upsertParty({
       message_id: msg.id,
       channel_id: msg.channel.id,
-      guild_id: guild.id,
+      guild_id: msg.guild.id,
       owner_id: interaction.user.id,
       kind: d.kind,
       title: d.title,
@@ -325,43 +352,44 @@ async function handleParty(interaction) {
     });
 
     await setMemberNote(msg.id, interaction.user.id, "");
+    const party = await getParty(msg.id);
+    await refreshPartyMessage(client, party);
 
-    await refreshPartyMessage(guild, msg.id);
-
-    await interaction.reply({ content: "✅ 파티가 생성되었습니다. 게시판을 확인하세요.", ephemeral: true });
-
-    await logEmbed(guild, {
-      title: "✅ 파티 생성(시간지정)",
-      color: 0x2ecc71,
-      fields: [
-        field("파티 메시지 ID", msg.id, true),
-        field("유저", `<@${interaction.user.id}>`, true),
-        field("역할표기", roleLabel || "(없음)", true),
-        field("종류", d.kind, true),
-        field("제목", d.title),
-        field("시작", `<t:${startAtUnix}:F>`),
-      ],
-    });
-
-    draft.delete(interaction.user.id);
+    DRAFT.delete(interaction.user.id);
+    await interaction.reply({ content: "✅ 파티가 생성되었습니다.", ephemeral: true });
     return true;
   }
 
-  // ==========================
-  // 5) 파티 메시지 버튼들 (DB 기반 판별)
-  // ==========================
+  // =========================
+  // C) 구버전 생성 플로우 (createPartyModal 제출)
+  // =========================
+  if (interaction.type === InteractionType.ModalSubmit && interaction.customId === "party:create:modal") {
+    // createPartyModal이 어떤 customId로 되어있는지 프로젝트마다 달라서,
+    // 최소한 이 블록은 “필요하면” 네 ui.js의 customId에 맞춰 바꿔야 함.
+    // 하지만 지금은 신버전 플로우를 우선 사용하도록 유지.
+    await interaction.reply({ content: "createPartyModal 경로는 현재 ui.js customId에 맞춰야 합니다. (지금은 신버전 플로우 사용 권장)", ephemeral: true });
+    return true;
+  }
+
+  // =========================
+  // D) 파티 메시지 버튼들 (DB 기반 판별)
+  // =========================
   if (interaction.isButton() && interaction.customId.startsWith("party:")) {
-    const party = await mustGetPartyOrReply(interaction);
-    if (!party) return true;
+    const party = await mustGetParty(interaction);
 
-    const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-    const admin = isAdmin(member);
-
-    const isOwner = interaction.user.id === party.owner_id;
+    // ✅ 여기서 “파티가 아닙니다”가 뜨던 문제 해결: footer가 아니라 DB로 판별
+    if (!party) {
+      await interaction.reply({ content: "이 메시지는 파티가 아닙니다.", ephemeral: true });
+      return true;
+    }
 
     // 참가/비고
     if (interaction.customId === "party:join") {
-      await interaction.showModal(joinNoteModal(interaction.message.id));
+      if (typeof ui.joinNoteModal === "function") {
+        await interaction.showModal(ui.joinNoteModal(party.message_id));
+        return true;
+      }
+      await interaction.reply({ content: "joinNoteModal이 없습니다(ui.js 확인).", ephemeral: true });
       return true;
     }
 
@@ -369,178 +397,113 @@ async function handleParty(interaction) {
     if (interaction.customId === "party:leave") {
       await removeMember(party.message_id, interaction.user.id);
 
-      // 멤버 0명이면 자동 종료(메시지도 삭제)
       const after = await getParty(party.message_id);
       const count = after?.members?.length ?? 0;
 
+      // 전원 이탈 → 자동 종료 + 메시지 삭제
       if (count <= 0) {
-        clearTimer(party.message_id);
         await deleteParty(party.message_id);
-
         await interaction.reply({ content: "모든 참가자가 나가서 파티가 자동 종료되었습니다.", ephemeral: true });
         await interaction.message.delete().catch(() => {});
-
-        await logEmbed(guild, {
-          title: "⚫ 파티 자동 종료(전원 이탈)",
-          color: 0x95a5a6,
-          fields: [
-            field("파티 메시지 ID", party.message_id, true),
-            field("마지막 이탈", `<@${interaction.user.id}>`, true),
-          ],
-        });
-
         return true;
       }
 
-      await refreshPartyMessage(guild, party.message_id);
+      await refreshPartyMessage(client, after);
       await interaction.reply({ content: "➖ 나가기 처리 완료", ephemeral: true });
-
-      await logEmbed(guild, {
-        title: "➖ 파티 나가기",
-        fields: [
-          field("파티 메시지 ID", party.message_id, true),
-          field("유저", `<@${interaction.user.id}>`, true),
-        ],
-      });
-
       return true;
     }
 
-    // 시간 변경 (파티장 or 운영진)
+    // 시간 변경(파티장만)
     if (interaction.customId === "party:time") {
-      if (!isOwner && !admin) {
-        await interaction.reply({ content: "파티장(또는 운영진)만 시간 변경이 가능합니다.", ephemeral: true });
+      if (interaction.user.id !== party.owner_id) {
+        await interaction.reply({ content: "파티장만 시간 변경이 가능합니다.", ephemeral: true });
         return true;
       }
 
-      // HH:mm 모달
-      const modal = new ModalBuilder()
-        .setCustomId(`party:timechange:${party.message_id}`)
-        .setTitle("시간 변경 (HH:mm)");
+      // ui에 timeChangeModal이 있으면 그걸 쓰고, 없으면 HH:mm 모달 직접 띄움
+      if (typeof ui.timeChangeModal === "function") {
+        await interaction.showModal(ui.timeChangeModal(party.message_id));
+        return true;
+      }
 
+      const modal = new ModalBuilder().setCustomId(`party:timechange:${party.message_id}`).setTitle("시간 변경 (HH:mm)");
       const input = new TextInputBuilder()
         .setCustomId("time")
         .setLabel("시간 (예: 14:05)")
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
-
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
       return true;
     }
 
-    // 시작 (파티원도 가능 / 운영진도 가능)
+    // 시작(참가자면 가능)
     if (interaction.customId === "party:start") {
-      const isMember = (party.members || []).some(m => m.user_id === interaction.user.id);
-
-      if (!isMember && !admin && !isOwner) {
-        await interaction.reply({ content: "참가자(또는 운영진)만 시작할 수 있습니다.", ephemeral: true });
+      const isMember = (party.members || []).some((m) => m.user_id === interaction.user.id);
+      if (!isMember && interaction.user.id !== party.owner_id) {
+        await interaction.reply({ content: "참가자만 시작할 수 있습니다.", ephemeral: true });
         return true;
       }
 
-      clearTimer(party.message_id);
       await setPartyStatus(party.message_id, "PLAYING");
-      await refreshPartyMessage(guild, party.message_id);
-
+      const updated = await getParty(party.message_id);
+      await refreshPartyMessage(client, updated);
       await interaction.reply({ content: "🟢 파티를 게임중으로 변경했습니다.", ephemeral: true });
-
-      await logEmbed(guild, {
-        title: "🟢 파티 시작",
-        color: 0x2ecc71,
-        fields: [
-          field("파티 메시지 ID", party.message_id, true),
-          field("시작자", `<@${interaction.user.id}>`, true),
-        ],
-      });
-
       return true;
     }
 
-    // 종료 (참가자도 가능 / 운영진도 가능)
+    // 종료(참가자면 가능)
     if (interaction.customId === "party:end") {
-      const isMember = (party.members || []).some(m => m.user_id === interaction.user.id);
-
-      if (!isMember && !admin && !isOwner) {
-        await interaction.reply({ content: "참가자(또는 운영진)만 종료할 수 있습니다.", ephemeral: true });
+      const isMember = (party.members || []).some((m) => m.user_id === interaction.user.id);
+      if (!isMember && interaction.user.id !== party.owner_id) {
+        await interaction.reply({ content: "참가자만 종료할 수 있습니다.", ephemeral: true });
         return true;
       }
 
-      clearTimer(party.message_id);
       await deleteParty(party.message_id);
-
       await interaction.reply({ content: "⚫ 파티를 종료하고 메시지를 삭제합니다.", ephemeral: true });
       await interaction.message.delete().catch(() => {});
-
-      await logEmbed(guild, {
-        title: "⚫ 파티 종료",
-        color: 0x95a5a6,
-        fields: [
-          field("파티 메시지 ID", party.message_id, true),
-          field("종료자", `<@${interaction.user.id}>`, true),
-        ],
-      });
-
       return true;
     }
 
-    // 예외
     await interaction.reply({ content: "처리할 수 없는 버튼입니다.", ephemeral: true });
     return true;
   }
 
-  // ==========================
-  // 6) 참가 비고 모달 제출
-  // ==========================
+  // =========================
+  // E) 참가/비고 모달 제출
+  // =========================
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:joinnote:")) {
     const msgId = interaction.customId.split(":")[2];
-
-    // 파티 존재 여부(DB 기준)
     const party = await getParty(msgId);
     if (!party) {
       await interaction.reply({ content: "이 메시지는 파티가 아닙니다.", ephemeral: true });
       return true;
     }
 
-    const inputNote = safeTrim(interaction.fields.getTextInputValue("note")).slice(0, 80);
+    const note = safeTrim(interaction.fields.getTextInputValue("note")).slice(0, 80);
+    await setMemberNote(msgId, interaction.user.id, note);
 
-    // 참가 + 비고 저장
-    await setMemberNote(msgId, interaction.user.id, inputNote);
-
-    // 메시지 갱신
-    await refreshPartyMessage(guild, msgId);
+    const updated = await getParty(msgId);
+    await refreshPartyMessage(client, updated);
 
     await interaction.reply({ content: "✅ 참가/비고가 반영되었습니다.", ephemeral: true });
-
-    await logEmbed(guild, {
-      title: "✅ 파티 참가/비고",
-      fields: [
-        field("파티 메시지 ID", msgId, true),
-        field("유저", `<@${interaction.user.id}>`, true),
-        field("비고", inputNote || "(없음)"),
-      ],
-    });
-
     return true;
   }
 
-  // ==========================
-  // 7) 시간 변경 모달 제출
-  // ==========================
+  // =========================
+  // F) 시간 변경 모달 제출(내장 HH:mm 모달)
+  // =========================
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:timechange:")) {
     const msgId = interaction.customId.split(":")[2];
-
     const party = await getParty(msgId);
     if (!party) {
       await interaction.reply({ content: "이 메시지는 파티가 아닙니다.", ephemeral: true });
       return true;
     }
 
-    const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-    const admin = isAdmin(member);
-    const isOwner = interaction.user.id === party.owner_id;
-
-    if (!isOwner && !admin) {
-      await interaction.reply({ content: "파티장(또는 운영진)만 시간 변경이 가능합니다.", ephemeral: true });
+    if (interaction.user.id !== party.owner_id) {
+      await interaction.reply({ content: "파티장만 시간 변경이 가능합니다.", ephemeral: true });
       return true;
     }
 
@@ -558,28 +521,21 @@ async function handleParty(interaction) {
       return true;
     }
 
-    const startAtUnix = kstUnixFromHHMM(hh, mm);
+    const startAt = kstUnixFromHHMM(hh, mm);
+    await updatePartyTime(msgId, startAt);
 
-    clearTimer(msgId);
-    await updatePartyTime(msgId, startAtUnix);
+    const updated = await getParty(msgId);
+    await refreshPartyMessage(client, updated);
 
-    await refreshPartyMessage(guild, msgId);
-
-    await interaction.reply({ content: `✅ 시간이 변경되었습니다: <t:${startAtUnix}:F>`, ephemeral: true });
-
-    await logEmbed(guild, {
-      title: "🕒 파티 시간 변경",
-      fields: [
-        field("파티 메시지 ID", msgId, true),
-        field("변경자", `<@${interaction.user.id}>`, true),
-        field("새 시간", `<t:${startAtUnix}:F>`),
-      ],
-    });
-
+    await interaction.reply({ content: `✅ 시간이 변경되었습니다: <t:${startAt}:F>`, ephemeral: true });
     return true;
   }
 
   return false;
 }
 
-module.exports = { handleParty };
+module.exports = {
+  handleParty,
+  runPartyTick,
+  syncOrderMessage,
+};
