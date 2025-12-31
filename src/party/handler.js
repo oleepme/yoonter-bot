@@ -1,7 +1,7 @@
 const { InteractionType } = require("discord.js");
-const { PARTY_BOARD_CHANNEL_ID, ROLE_NEWBIE_ID, ROLE_MEMBER_ID } = require("../../config");
-const { logEmbed, field } = require("../../discord/log");
-const { safeTrim, nowUnix } = require("../../discord/util");
+const { PARTY_BOARD_CHANNEL_ID, ROLE_NEWBIE_ID, ROLE_MEMBER_ID } = require("../config");
+const { logEmbed, field } = require("../discord/log");
+const { safeTrim, nowUnix } = require("../discord/util");
 const { parseMeta } = require("./meta");
 const {
   kindSelectRow,

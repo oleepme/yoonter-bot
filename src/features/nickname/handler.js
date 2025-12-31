@@ -1,5 +1,5 @@
 const { PermissionsBitField, InteractionType } = require("discord.js");
-const { logEmbed, field } = require("../../discord/log");
+const { logEmbed, field } = require("../discord/log");
 const { safeTrim } = require("../../discord/util");
 const { buildNicknameModal } = require("./ui");
 
