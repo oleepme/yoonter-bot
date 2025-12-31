@@ -195,10 +195,10 @@ function joinNoteModal(msgId) {
 }
 
 function kindLabel(kind) {
-  if (kind === "GAME") return "게임";
-  if (kind === "MOVIE") return "영화";
-  if (kind === "CHAT") return "수다";
-  if (kind === "MUSIC") return "노래";
+  if (kind === "GAME") return "🎮게임";
+  if (kind === "MOVIE") return "🎬영화";
+  if (kind === "CHAT") return "💬수다";
+  if (kind === "MUSIC") return "🎤노래";
   return "게임";
 }
 
@@ -209,16 +209,23 @@ function kindIcon(kind) {
   return "🎮";
 }
 
+function endedActionRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("party:delete").setLabel("🗑 삭제").setStyle(ButtonStyle.Danger)
+  );
+}
+
 module.exports = {
   partyBoardEmbed,
   partyBoardComponents,
   kindSelectRow,
-  editKindSelectRow,
   cancelRow,
   createPartyModal,
   editPartyModal,
   partyActionRow,
+  endedActionRow,   // ✅ 추가
   joinNoteModal,
   kindLabel,
   kindIcon,
 };
+

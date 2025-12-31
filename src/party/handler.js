@@ -5,21 +5,17 @@ const { logEmbed, field } = require("../discord/log");
 const { safeTrim } = require("../discord/util");
 const {
   kindSelectRow,
-  editKindSelectRow,
   cancelRow,
   createPartyModal,
   editPartyModal,
   partyActionRow,
+  endedActionRow, // ✅ 종료 후 삭제 버튼 row (ui.js에 있어야 함)
   joinNoteModal,
   kindLabel,
   kindIcon,
 } = require("./ui");
-const { upsertParty, getParty, setMemberNote, removeMember, deleteParty } = require("../db");
 
-// 진행중 종류 선택(생성용) 임시 저장
-const createKindDraft = new Map(); // userId -> kind
-// 수정 시 어떤 msgId를 수정 중인지 저장
-const editTargetDraft = new Map(); // userId -> msgId
+const { upsertParty, getParty, setMemberNote, removeMember, deleteParty } = require("../db");
 
 function isAdmin(interaction) {
   const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || "";
@@ -58,7 +54,7 @@ function buildPartyEmbed(partyRow) {
   const kLabel = kindLabel(partyRow.kind);
   const icon = kindIcon(partyRow.kind);
 
-  // 수다/노래는 title이 비어있을 수 있음 → 제목 라인에서 자동 처리
+  // 수다/노래는 title이 비어있을 수 있음
   const titleText = (partyRow.title ?? "").toString().trim();
   const secondLine = titleText ? `${icon} ${kLabel} — ${titleText}` : `${icon} ${kLabel}`;
 
@@ -81,7 +77,10 @@ async function refreshPartyMessage(guild, partyRow) {
   if (!msg) return;
 
   const embed = buildPartyEmbed(partyRow);
-  const components = partyRow.status === "ENDED" ? [] : [partyActionRow()];
+
+  // ✅ 종료면 버튼을 없애지 말고 "삭제 버튼"만 남김
+  const components = partyRow.status === "ENDED" ? [endedActionRow()] : [partyActionRow()];
+
   await msg.edit({ embeds: [embed], components }).catch(() => {});
 }
 
@@ -91,19 +90,46 @@ function parseMaxPlayers(maxRaw) {
   return n;
 }
 
-async function endParty(guild, partyRow, reason) {
-  // 종료 상태로 갱신 후 메시지 버튼 제거
+/**
+ * 종료 처리 정책:
+ * 1) 종료 시 메시지 delete()를 "시도"
+ * 2) 성공하면: DB도 deleteParty로 정리
+ * 3) 실패하면(권한 부족 등): 메시지는 종료 상태로 고정 + 🗑 삭제 버튼만 남김
+ *    -> 이 경우 DB는 ENDED 상태로 남겨야 delete 버튼이 동작함
+ */
+async function endParty(guild, partyRow, reason, message) {
+  // 종료 상태로 업데이트 (DB 기준 유지)
   await upsertParty({ ...partyRow, status: "ENDED", mode: "TEXT", start_at: 0 });
+
+  // 메시지 삭제 시도
+  if (message) {
+    try {
+      await message.delete();
+      // 삭제 성공: DB까지 완전 정리
+      await deleteParty(partyRow.message_id);
+
+      await logEmbed(guild, {
+        title: "⚫ 파티 종료(메시지 삭제)",
+        color: 0x95a5a6,
+        fields: [field("파티 메시지 ID", partyRow.message_id, true), field("사유", reason)],
+      });
+      return;
+    } catch (e) {
+      // 삭제 실패 → 아래에서 종료 고정 + 삭제 버튼 제공
+    }
+  }
+
   const ended = await getParty(partyRow.message_id);
   if (ended) await refreshPartyMessage(guild, ended);
 
-  // 정책: 종료 후 DB 삭제
-  await deleteParty(partyRow.message_id);
-
   await logEmbed(guild, {
-    title: "⚫ 파티 종료",
+    title: "⚫ 파티 종료(메시지 유지)",
     color: 0x95a5a6,
-    fields: [field("파티 메시지 ID", partyRow.message_id, true), field("사유", reason)],
+    fields: [
+      field("파티 메시지 ID", partyRow.message_id, true),
+      field("사유", reason),
+      field("처리", "메시지 삭제 실패(권한 부족 가능) → 종료 고정 + 🗑 삭제 버튼 제공"),
+    ],
   });
 }
 
@@ -111,10 +137,10 @@ async function handleParty(interaction) {
   const guild = interaction.guild;
   if (!guild) return false;
 
-  // 1) 생성 버튼 → 종류 선택 드롭다운(에페메랄)
+  /**
+   * 1) 생성 버튼 → 종류 선택 드롭다운(에페메랄)
+   */
   if (interaction.isButton() && interaction.customId === "party:create") {
-    createKindDraft.delete(interaction.user.id);
-
     await interaction.reply({
       content: "파티 종류를 선택하세요.",
       components: [kindSelectRow("party:create:kind"), cancelRow("party:create:cancel")],
@@ -123,26 +149,24 @@ async function handleParty(interaction) {
     return true;
   }
 
-  // 1-1) 생성 취소
+  // 생성 취소
   if (interaction.isButton() && interaction.customId === "party:create:cancel") {
-    createKindDraft.delete(interaction.user.id);
     await interaction.update({ content: "취소되었습니다.", components: [] }).catch(() => {});
     return true;
   }
 
-  // 1-2) 생성: 종류 선택 → 모달 띄우기
+  // 생성: 종류 선택 → 모달
   if (interaction.isStringSelectMenu() && interaction.customId === "party:create:kind") {
     const kind = interaction.values[0]; // GAME/MOVIE/CHAT/MUSIC
-    createKindDraft.set(interaction.user.id, kind);
-
-    // select interaction은 아직 응답 전이므로 showModal 가능
     await interaction.showModal(createPartyModal(kind));
     return true;
   }
 
-  // 2) 생성 모달 제출 → 파티 생성 (시간은 텍스트 저장)
+  /**
+   * 2) 생성 모달 제출 → 파티 생성
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:create:submit:")) {
-    const kind = interaction.customId.split(":")[3]; // kind
+    const kind = interaction.customId.split(":")[3];
     const note = safeTrim(interaction.fields.getTextInputValue("note"));
     const time = safeTrim(interaction.fields.getTextInputValue("time")) || "모바시";
     const max = parseMaxPlayers(safeTrim(interaction.fields.getTextInputValue("max")));
@@ -167,6 +191,7 @@ async function handleParty(interaction) {
       return true;
     }
 
+    // NOTE: 지금은 '파티 생성 중...' 메시지로 먼저 만들고 edit하는 구조(추후 1메시지 UX로 개선 가능)
     const msg = await board.send({ content: "파티 생성 중..." });
 
     await upsertParty({
@@ -175,9 +200,9 @@ async function handleParty(interaction) {
       guild_id: guild.id,
       owner_id: interaction.user.id,
       kind,
-      title,            // CHAT/MUSIC는 '' 가능
+      title, // CHAT/MUSIC는 '' 가능
       party_note: note,
-      time_text: time,  // ✅ 핵심: 텍스트
+      time_text: time,
       mode: "TEXT",
       start_at: 0,
       status: "RECRUIT",
@@ -213,9 +238,7 @@ async function handleParty(interaction) {
    */
   if (interaction.isButton() && interaction.customId.startsWith("party:")) {
     const msgId = interaction.message?.id;
-    const chId = interaction.message?.channel?.id;
-
-    if (!msgId || !chId) {
+    if (!msgId) {
       await interaction.reply({ content: "메시지 정보를 찾지 못했습니다.", ephemeral: true });
       return true;
     }
@@ -226,25 +249,33 @@ async function handleParty(interaction) {
       return true;
     }
 
+    // ✅ 종료된 파티는 "삭제"만 허용
     if (party.status === "ENDED") {
-      await interaction.reply({ content: "이미 종료된 파티입니다.", ephemeral: true });
-      return true;
+      if (interaction.customId !== "party:delete") {
+        await interaction.reply({ content: "이미 종료된 파티입니다.", ephemeral: true });
+        return true;
+      }
+      // 아래 delete 로직으로 계속
     }
 
-    // 참가/비고
+    /**
+     * 참가/비고
+     */
     if (interaction.customId === "party:join") {
       await interaction.showModal(joinNoteModal(msgId));
       return true;
     }
 
-    // 나가기 → 0명이면 자동 종료
+    /**
+     * 나가기 → 0명이면 자동 종료(+ 삭제 시도)
+     */
     if (interaction.customId === "party:leave") {
       await removeMember(msgId, interaction.user.id);
 
       const after = await getParty(msgId);
       if (!after || (after.members?.length ?? 0) === 0) {
         await interaction.reply({ content: "➖ 나가기 완료 (전원 이탈로 자동 종료)", ephemeral: true });
-        await endParty(guild, party, "전원 이탈(자동종료)");
+        await endParty(guild, party, "전원 이탈(자동종료)", interaction.message);
         return true;
       }
 
@@ -253,7 +284,11 @@ async function handleParty(interaction) {
       return true;
     }
 
-    // 수정: 파티장/운영진만 → 종류 먼저 고르게 하고 모달
+    /**
+     * 수정: ✅ 종류 변경 불가
+     * - 드롭다운 단계 제거
+     * - 바로 모달 오픈 (현재 kind 기반)
+     */
     if (interaction.customId === "party:edit") {
       const ok = interaction.user.id === party.owner_id || isAdmin(interaction);
       if (!ok) {
@@ -261,17 +296,13 @@ async function handleParty(interaction) {
         return true;
       }
 
-      editTargetDraft.set(interaction.user.id, msgId);
-
-      await interaction.reply({
-        content: "수정할 파티 종류를 선택하세요. (변경 없으면 현재 종류 선택)",
-        components: [editKindSelectRow("party:edit:kind", party.kind), cancelRow("party:edit:cancel")],
-        ephemeral: true,
-      });
+      await interaction.showModal(editPartyModal(msgId, party.kind, party));
       return true;
     }
 
-    // 시작
+    /**
+     * 시작
+     */
     if (interaction.customId === "party:start") {
       await upsertParty({ ...party, status: "PLAYING", mode: "TEXT", start_at: 0 });
       const updated = await getParty(msgId);
@@ -280,44 +311,46 @@ async function handleParty(interaction) {
       return true;
     }
 
-    // 종료
+    /**
+     * 종료: 종료 시 메시지 삭제 시도
+     */
     if (interaction.customId === "party:end") {
       await interaction.reply({ content: "⚫ 파티를 종료했습니다.", ephemeral: true });
-      await endParty(guild, party, "수동 종료");
+      await endParty(guild, party, "수동 종료", interaction.message);
+      return true;
+    }
+
+    /**
+     * 삭제 버튼(종료 상태에서 노출)
+     * - 파티장/운영진만
+     * - delete 성공 시 DB 삭제
+     */
+    if (interaction.customId === "party:delete") {
+      const ok = interaction.user.id === party.owner_id || isAdmin(interaction);
+      if (!ok) {
+        await interaction.reply({ content: "파티장 또는 운영진만 삭제할 수 있습니다.", ephemeral: true });
+        return true;
+      }
+
+      try {
+        await interaction.message.delete();
+        await deleteParty(msgId);
+        await interaction.reply({ content: "🗑 삭제 완료", ephemeral: true });
+      } catch (e) {
+        await interaction.reply({
+          content: "메시지 삭제에 실패했습니다. (봇에 '메시지 관리' 권한이 필요할 수 있어요)",
+          ephemeral: true,
+        });
+      }
       return true;
     }
 
     return false;
   }
 
-  // 3-1) 수정 취소
-  if (interaction.isButton() && interaction.customId === "party:edit:cancel") {
-    editTargetDraft.delete(interaction.user.id);
-    await interaction.update({ content: "취소되었습니다.", components: [] }).catch(() => {});
-    return true;
-  }
-
-  // 3-2) 수정: 종류 선택 → 모달
-  if (interaction.isStringSelectMenu() && interaction.customId === "party:edit:kind") {
-    const msgId = editTargetDraft.get(interaction.user.id);
-    if (!msgId) {
-      await interaction.reply({ content: "세션이 만료되었습니다. 다시 수정하세요.", ephemeral: true });
-      return true;
-    }
-
-    const kind = interaction.values[0];
-    const party = await getParty(msgId);
-    if (!party) {
-      await interaction.reply({ content: "파티를 찾지 못했습니다.", ephemeral: true });
-      return true;
-    }
-
-    // showModal (select interaction 1회 응답)
-    await interaction.showModal(editPartyModal(msgId, kind, party));
-    return true;
-  }
-
-  // 4) 참가 비고 모달 제출
+  /**
+   * 4) 참가 비고 모달 제출
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:joinnote:")) {
     const msgId = interaction.customId.split(":")[2];
     const party = await getParty(msgId);
@@ -335,7 +368,7 @@ async function handleParty(interaction) {
 
     // 정원 체크
     const maxPlayers = Number(party.max_players) || 4;
-    const exists = (party.members ?? []).some(m => m.user_id === interaction.user.id);
+    const exists = (party.members ?? []).some((m) => m.user_id === interaction.user.id);
     const count = party.members?.length ?? 0;
     if (!exists && count >= maxPlayers) {
       await interaction.reply({ content: `이미 정원이 찼습니다. (최대 ${maxPlayers}명)`, ephemeral: true });
@@ -350,11 +383,12 @@ async function handleParty(interaction) {
     return true;
   }
 
-  // 5) 수정 모달 제출 (모든 항목 반영)
+  /**
+   * 5) 수정 모달 제출 (✅ kind는 고정: customId에 들어오는 kind를 무시하고 party.kind 사용)
+   */
   if (interaction.type === InteractionType.ModalSubmit && interaction.customId.startsWith("party:edit:submit:")) {
     const parts = interaction.customId.split(":");
     const msgId = parts[3];
-    const kind = parts[4];
 
     const party = await getParty(msgId);
     if (!party) {
@@ -368,6 +402,7 @@ async function handleParty(interaction) {
       return true;
     }
 
+    const kind = party.kind; // ✅ 종류 수정 불가
     const note = safeTrim(interaction.fields.getTextInputValue("note"));
     const time = safeTrim(interaction.fields.getTextInputValue("time")) || "모바시";
     const max = parseMaxPlayers(safeTrim(interaction.fields.getTextInputValue("max")));
@@ -389,13 +424,16 @@ async function handleParty(interaction) {
     // 인원 감소 안전장치
     const memberCount = party.members?.length ?? 0;
     if (max < memberCount) {
-      await interaction.reply({ content: `현재 참가자가 ${memberCount}명입니다. 인원제한을 ${memberCount} 미만으로 줄일 수 없습니다.`, ephemeral: true });
+      await interaction.reply({
+        content: `현재 참가자가 ${memberCount}명입니다. 인원제한을 ${memberCount} 미만으로 줄일 수 없습니다.`,
+        ephemeral: true,
+      });
       return true;
     }
 
     await upsertParty({
       ...party,
-      kind,
+      // kind는 그대로
       title,
       party_note: note,
       time_text: time,
@@ -406,8 +444,6 @@ async function handleParty(interaction) {
 
     const updated = await getParty(msgId);
     if (updated) await refreshPartyMessage(guild, updated);
-
-    editTargetDraft.delete(interaction.user.id);
 
     await interaction.reply({ content: "✅ 파티 수정이 반영되었습니다.", ephemeral: true });
     return true;
