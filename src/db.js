@@ -1,128 +1,169 @@
-// src/db.js
-const { Pool } = require("pg");
+// src/party/ui.js
+const {
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} = require("discord.js");
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) throw new Error("Missing env: DATABASE_URL");
+// 1) 파티 현황판(고정 메시지) - "상세 메시지" 삭제 버전
+function partyBoardEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x95a5a6)
+    .setTitle("📌 파티 현황판");
+  // description 없음, footer 없음 (DDG 문자열 노출 방지)
+}
 
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined,
-});
+function partyBoardComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("party:create")
+        .setLabel("➕ 새 파티 만들기")
+        .setStyle(ButtonStyle.Success)
+    ),
+  ];
+}
 
-async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS parties (
-      message_id  TEXT PRIMARY KEY,
-      channel_id  TEXT NOT NULL,
-      guild_id    TEXT NOT NULL,
-      owner_id    TEXT NOT NULL,
-      kind        TEXT NOT NULL,
-      title       TEXT NOT NULL,
-      party_note  TEXT DEFAULT '',
-      mode        TEXT NOT NULL,      -- 'TIME' | 'ASAP'
-      start_at    BIGINT NOT NULL,    -- unix seconds (UTC timestamp)
-      status      TEXT NOT NULL,      -- 'RECRUIT' | 'PLAYING' | 'ENDED'
-      max_players INT  NOT NULL DEFAULT 4,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+// 2) "새 파티 만들기" 모달 (한 번에 입력)
+function createPartyModal() {
+  const modal = new ModalBuilder()
+    .setCustomId("party:create:modal")
+    .setTitle("새 파티 만들기");
+
+  const game = new TextInputBuilder()
+    .setCustomId("title")
+    .setLabel("🎮 게임 이름")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  const note = new TextInputBuilder()
+    .setCustomId("party_note")
+    .setLabel("특이사항 (선택)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  const time = new TextInputBuilder()
+    .setCustomId("start_hhmm")
+    .setLabel("시작시간 (HH:mm) / 비우면 모바시")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder("예: 14:05");
+
+  const max = new TextInputBuilder()
+    .setCustomId("max_players")
+    .setLabel("최대 인원 (숫자)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder("예: 4");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(game),
+    new ActionRowBuilder().addComponents(note),
+    new ActionRowBuilder().addComponents(time),
+    new ActionRowBuilder().addComponents(max)
+  );
+
+  return modal;
+}
+
+// 3) 참가 비고 모달
+function joinNoteModal(messageId) {
+  const modal = new ModalBuilder()
+    .setCustomId(`party:joinnote:${messageId}`)
+    .setTitle("참가 비고(선택)");
+
+  const input = new TextInputBuilder()
+    .setCustomId("note")
+    .setLabel("비고 예: 늦참10 / 마이크X")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
+// 4) 시간 변경 모달
+function timeChangeModal(messageId) {
+  const modal = new ModalBuilder()
+    .setCustomId(`party:timechange:${messageId}`)
+    .setTitle("시간 변경");
+
+  const time = new TextInputBuilder()
+    .setCustomId("start_hhmm")
+    .setLabel("시작시간 (HH:mm)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("예: 14:05");
+
+  modal.addComponents(new ActionRowBuilder().addComponents(time));
+  return modal;
+}
+
+// 5) 파티 버튼들
+function partyActionRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("party:join").setLabel("참가/비고").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("party:leave").setLabel("나가기").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("party:time").setLabel("시간변경").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("party:start").setLabel("시작").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("party:end").setLabel("종료").setStyle(ButtonStyle.Danger)
+  );
+}
+
+// 6) 임베드 렌더링 (네가 요구한 레이아웃 고정)
+function statusText(status) {
+  if (status === "PLAYING") return "플레이중";
+  if (status === "ENDED") return "종료";
+  return "모집중";
+}
+
+function startText(mode, startAtUnix) {
+  if (mode === "ASAP") return "⚡ 모이면 바로 시작";
+  return `🕒 <t:${startAtUnix}:t> ( <t:${startAtUnix}:R> )`;
+}
+
+function buildPartyEmbedFromDb(party) {
+  const status = party.status || "RECRUIT";
+  const title = party.title || "";
+  const partyNote = (party.party_note || "").trim() || "(없음)";
+  const mode = party.mode || "TIME";
+  const startAt = Number(party.start_at || 0);
+  const maxPlayers = Number(party.max_players || 4);
+  const members = Array.isArray(party.members) ? party.members : [];
+
+  // 번호 슬롯 고정 1..maxPlayers
+  const slots = [];
+  for (let i = 0; i < maxPlayers; i++) {
+    const m = members[i];
+    if (!m) slots.push(`${i + 1}.`);
+    else slots.push(`${i + 1}. <@${m.user_id}>${m.note ? ` — ${m.note}` : ""}`);
+  }
+
+  return new EmbedBuilder()
+    .setColor(status === "PLAYING" ? 0x2ecc71 : status === "ENDED" ? 0x95a5a6 : 0xe74c3c)
+    // 상단 1줄: 상태
+    .setTitle(statusText(status))
+    // 상단 2줄: 🎮 게임 이름
+    .setDescription(`🎮 ${title}`)
+    // 1행(2칸): 특이사항 / 시간
+    .addFields(
+      { name: "특이사항", value: partyNote, inline: true },
+      { name: "시간", value: startText(mode, startAt), inline: true },
+      // 2행(1칸): 참가자
+      { name: "참가자", value: slots.join("\n"), inline: false }
     );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS party_members (
-      message_id TEXT NOT NULL,
-      user_id    TEXT NOT NULL,
-      note       TEXT DEFAULT '',
-      joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (message_id, user_id)
-    );
-  `);
-}
-
-async function upsertParty(party) {
-  const {
-    message_id,
-    channel_id,
-    guild_id,
-    owner_id,
-    kind,
-    title,
-    party_note = "",
-    mode,
-    start_at,
-    status,
-    max_players = 4,
-  } = party;
-
-  await pool.query(
-    `
-    INSERT INTO parties
-      (message_id, channel_id, guild_id, owner_id, kind, title, party_note, mode, start_at, status, max_players)
-    VALUES
-      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-    ON CONFLICT (message_id) DO UPDATE SET
-      channel_id   = EXCLUDED.channel_id,
-      guild_id     = EXCLUDED.guild_id,
-      owner_id     = EXCLUDED.owner_id,
-      kind         = EXCLUDED.kind,
-      title        = EXCLUDED.title,
-      party_note   = EXCLUDED.party_note,
-      mode         = EXCLUDED.mode,
-      start_at     = EXCLUDED.start_at,
-      status       = EXCLUDED.status,
-      max_players  = EXCLUDED.max_players,
-      updated_at   = NOW()
-    `,
-    [message_id, channel_id, guild_id, owner_id, kind, title, party_note, mode, start_at, status, max_players]
-  );
-}
-
-async function setPartyStatus(messageId, status) {
-  await pool.query(
-    `UPDATE parties SET status=$2, updated_at=NOW() WHERE message_id=$1`,
-    [messageId, status]
-  );
-}
-
-async function setMemberNote(messageId, userId, note = "") {
-  await pool.query(
-    `
-    INSERT INTO party_members (message_id, user_id, note)
-    VALUES ($1,$2,$3)
-    ON CONFLICT (message_id, user_id) DO UPDATE SET
-      note = EXCLUDED.note
-    `,
-    [messageId, userId, note]
-  );
-}
-
-async function removeMember(messageId, userId) {
-  await pool.query(`DELETE FROM party_members WHERE message_id=$1 AND user_id=$2`, [messageId, userId]);
-}
-
-async function deleteParty(messageId) {
-  await pool.query(`DELETE FROM party_members WHERE message_id=$1`, [messageId]);
-  await pool.query(`DELETE FROM parties WHERE message_id=$1`, [messageId]);
-}
-
-async function getParty(messageId) {
-  const p = await pool.query(`SELECT * FROM parties WHERE message_id=$1`, [messageId]);
-  if (!p.rows.length) return null;
-
-  const m = await pool.query(
-    `SELECT user_id, note FROM party_members WHERE message_id=$1 ORDER BY joined_at ASC`,
-    [messageId]
-  );
-
-  return { ...p.rows[0], members: m.rows };
 }
 
 module.exports = {
-  initDb,
-  upsertParty,
-  setPartyStatus,
-  getParty,
-  setMemberNote,
-  removeMember,
-  deleteParty,
+  partyBoardEmbed,
+  partyBoardComponents,
+  createPartyModal,
+  joinNoteModal,
+  timeChangeModal,
+  partyActionRow,
+  buildPartyEmbedFromDb,
 };

@@ -1,8 +1,8 @@
-const { initDb } = require("./db");
-
-
+// src/index.js
 const http = require("http");
 const { Client, GatewayIntentBits } = require("discord.js");
+
+const { initDb } = require("./db");
 const { registerCommands } = require("./discord/registerCommands");
 const {
   DISCORD_TOKEN,
@@ -16,22 +16,24 @@ const {
 const { partyBoardEmbed, partyBoardComponents } = require("./party/ui");
 const { nicknameBoardComponents } = require("./features/nickname/ui");
 const { handleNickname } = require("./features/nickname/handler");
-const { handleParty } = require("./party/handler");
+const { handleParty, runPartyTick, syncOrderMessage } = require("./party/handler");
+const { listActiveParties } = require("./db");
 
 console.log("BOOT_OK");
-
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
-});
 
 // (A) 더미 웹 서버 (Railway 헬스용)
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => { res.writeHead(200); res.end("OK"); })
   .listen(PORT, () => console.log(`🌐 Dummy web server running on port ${PORT}`));
 
-async function ensurePinnedMessage(channel, footerText, payloadBuilder) {
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+});
+
+async function ensurePinnedBoard(channel, title, payloadBuilder) {
   const pins = await channel.messages.fetchPinned().catch(() => null);
-  if (pins?.find(m => m.embeds?.[0]?.footer?.text === footerText)) return;
+  const exists = pins?.find(m => m.embeds?.[0]?.title === title);
+  if (exists) return;
 
   const payload = payloadBuilder();
   const msg = await channel.send(payload);
@@ -47,35 +49,54 @@ initDb()
 
 client.once("ready", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
-
   await registerCommands();
 
   const guild = await client.guilds.fetch(GUILD_ID);
 
-  // 파티 게시판 핀 보장
+  // 파티 게시판 핀 보장 (footer meta 없이 제목으로 찾음)
   if (ENABLE_PARTY) {
     const board = await guild.channels.fetch(PARTY_BOARD_CHANNEL_ID).catch(() => null);
     if (board?.isTextBased()) {
-      await ensurePinnedMessage(board, "DDG|partyboard|v1", () => ({
+      await ensurePinnedBoard(board, "📌 파티 현황판", () => ({
         embeds: [partyBoardEmbed()],
         components: partyBoardComponents()
       }));
     }
   }
 
-  // 닉네임 도움 핀 보장 (선택)
+  // (선택) 닉네임 도움 핀 보장 - 기존 유지
   if (ENABLE_NICK && NICK_HELP_CHANNEL_ID) {
     const nickCh = await guild.channels.fetch(NICK_HELP_CHANNEL_ID).catch(() => null);
     if (nickCh?.isTextBased()) {
-      await ensurePinnedMessage(nickCh, "DDG|nickboard|v1", () => ({
-        embeds: [{
-          title: "🪪 닉네임 설정",
-          description: "아래 버튼으로 서버 별명을 변경합니다.",
-          footer: { text: "DDG|nickboard|v1" }
-        }],
-        components: nicknameBoardComponents()
-      }));
+      // 닉네임 보드는 여기서는 간단히 유지 (원하면 이것도 제목 기반으로 바꿔줄게)
+      const pins = await nickCh.messages.fetchPinned().catch(() => null);
+      const exists = pins?.find(m => m.embeds?.[0]?.title === "🪪 닉네임 설정");
+      if (!exists) {
+        const msg = await nickCh.send({
+          embeds: [{
+            title: "🪪 닉네임 설정",
+            description: "아래 버튼으로 서버 별명을 변경합니다."
+          }],
+          components: nicknameBoardComponents()
+        });
+        await msg.pin().catch(() => {});
+      }
     }
+  }
+
+  // ✅ 재시작 후에도 주문서 싱크(깨짐 방지)
+  if (ENABLE_PARTY) {
+    const active = await listActiveParties().catch(() => []);
+    for (const messageId of active) {
+      await syncOrderMessage(guild, messageId).catch(() => {});
+    }
+  }
+
+  // ✅ 30초마다 자동 상태 전환
+  if (ENABLE_PARTY) {
+    setInterval(() => {
+      runPartyTick(client).catch(() => {});
+    }, 30 * 1000);
   }
 });
 
