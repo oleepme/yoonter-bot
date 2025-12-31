@@ -18,6 +18,7 @@ const {
 const { upsertParty, getParty, setMemberNote, removeMember, deleteParty } = require("../db");
 
 const ERROR_EPHEMERAL_MS = 8000;
+const OK_BLANK = "\u200b"; // 빈 ACK용
 
 function isAdmin(interaction) {
   const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || "";
@@ -40,28 +41,36 @@ async function ackUpdate(interaction) {
 }
 
 /**
- * 모달 submit: 규칙상 응답이 필요하므로 ephemeral로 defer 후 끝나면 바로 삭제
+ * ✅ 모달 submit: "삭제"를 하지 않는다.
+ * - 성공: 빈 에페메랄(제로폭)로 ACK만 하고 그대로 둠
+ * - 실패: 8초 표시 후, 삭제 대신 다시 빈 상태로 되돌림
  */
 async function ackModal(interaction) {
-  await interaction.deferReply({ ephemeral: true }).catch(() => {});
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.reply({ content: OK_BLANK, ephemeral: true }).catch(() => {});
+  }
 }
-async function doneModal(interaction) {
+async function doneModal(_interaction) {
+  // 성공은 삭제하지 않음 (삭제 흔적 방지)
 }
 
 /**
- * 실패 안내는 잠깐만 에페메랄로 보여주고 자동 삭제
+ * 실패 안내 (삭제 흔적 방지 버전)
+ * - ModalSubmit: editReply로 에러 표시 → 8초 후 다시 빈 텍스트로 되돌림
+ * - Button/Select: reply/followUp로 표시 → 8초 후 delete (이건 "삭제됨" 흔적이 아닌 에페메랄 자체 삭제)
  */
 async function ephemeralError(interaction, content) {
   try {
     if (interaction.type === InteractionType.ModalSubmit) {
       if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        await interaction.reply({ content: OK_BLANK, ephemeral: true }).catch(() => {});
       }
       await interaction.editReply({ content }).catch(() => {});
-      setTimeout(() => interaction.deleteReply().catch(() => {}), ERROR_EPHEMERAL_MS);
+      setTimeout(() => interaction.editReply({ content: OK_BLANK }).catch(() => {}), ERROR_EPHEMERAL_MS);
       return;
     }
 
+    // 버튼/셀렉트는 원래대로 짧게 보여주고 삭제
     if (interaction.deferred || interaction.replied) {
       const m = await interaction.followUp({ content, ephemeral: true }).catch(() => null);
       if (m?.delete) setTimeout(() => m.delete().catch(() => {}), ERROR_EPHEMERAL_MS);
@@ -126,14 +135,9 @@ function buildPartyEmbed(partyRow) {
   const titleText = (partyRow.title ?? "").toString().trim();
   const secondLine = titleText ? `${icon} ${kLabel} — ${titleText}` : `${icon} ${kLabel}`;
 
-  // GAME만 슬롯 필요 → maxPlayers 계산
-  const maxPlayers = isUnlimitedKind(partyRow.kind)
-    ? 0
-    : Number(partyRow.max_players) || 4;
+  const maxPlayers = isUnlimitedKind(partyRow.kind) ? 0 : Number(partyRow.max_players) || 4;
 
-  const peopleValue = isUnlimitedKind(partyRow.kind)
-    ? "제한 없음"
-    : `${maxPlayers}명`;
+  const peopleValue = isUnlimitedKind(partyRow.kind) ? "제한 없음" : `${maxPlayers}명`;
 
   return {
     color:
@@ -224,18 +228,16 @@ async function handleParty(interaction) {
     return true;
   }
 
-  // 생성 취소: 흔적 0
+  // 생성 취소: 그냥 ACK만 (삭제 흔적 방지)
   if (interaction.isButton() && interaction.customId === "party:create:cancel") {
     await ackUpdate(interaction);
-    await interaction.deleteReply().catch(() => {});
     return true;
   }
 
-  // 종류 선택 → 모달 + 에페메랄 즉시 삭제
+  // 종류 선택 → 모달 (여기서 deleteReply 하지 않음)
   if (interaction.isStringSelectMenu() && interaction.customId === "party:create:kind") {
     const kind = interaction.values[0];
     await interaction.showModal(createPartyModal(kind)).catch(() => {});
-    await interaction.deleteReply().catch(() => {});
     return true;
   }
 
@@ -275,6 +277,7 @@ async function handleParty(interaction) {
         return true;
       }
 
+      // TODO(1순위): 이 텍스트 메시지는 다음 단계에서 embed-only로 제거 예정
       const msg = await board.send({ content: "파티 생성 중..." });
 
       await upsertParty({
