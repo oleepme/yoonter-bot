@@ -17,7 +17,6 @@ const { partyBoardEmbed, partyBoardComponents } = require("./party/ui");
 const { nicknameBoardComponents } = require("./features/nickname/ui");
 const { handleNickname } = require("./features/nickname/handler");
 const { handleParty, runPartyTick, syncOrderMessage } = require("./party/handler");
-const { listActiveParties } = require("./db");
 
 console.log("BOOT_OK");
 
@@ -130,4 +129,5 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
+
 
