@@ -10,7 +10,7 @@ const {
   ENABLE_PARTY
 } = require("./config");
 
-const { partyBoardEmbed, partyBoardComponents } = require("./features/party/ui");
+const { partyBoardEmbed, partyBoardComponents } = require("./party/ui");
 const { nicknameBoardComponents } = require("./features/nickname/ui");
 const { handleNickname } = require("./features/nickname/handler");
 const { handleParty } = require("./features/party/handler");
@@ -99,3 +99,4 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN);
+
