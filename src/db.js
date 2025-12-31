@@ -10,28 +10,23 @@ const pool = new Pool({
 });
 
 async function initDb() {
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS parties (
-    message_id  TEXT PRIMARY KEY,
-    channel_id  TEXT NOT NULL,
-    guild_id    TEXT NOT NULL,
-    owner_id    TEXT NOT NULL,
-    kind        TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    party_note  TEXT DEFAULT '',
-    time_text   TEXT DEFAULT '',
-
-    mode        TEXT NOT NULL,      -- ✅ 유지
-    start_at    BIGINT NOT NULL,    -- ✅ 유지
-
-    status      TEXT NOT NULL,
-    max_players INT  NOT NULL DEFAULT 4,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  );
-`);
-
-  // 기존 테이블에 time_text 없던 경우 대비(안전)
-  await pool.query(`ALTER TABLE parties ADD COLUMN IF NOT EXISTS time_text TEXT DEFAULT ''`);
+  // 기존 테이블 생성
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS parties (
+      message_id  TEXT PRIMARY KEY,
+      channel_id  TEXT NOT NULL,
+      guild_id    TEXT NOT NULL,
+      owner_id    TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      party_note  TEXT DEFAULT '',
+      mode        TEXT NOT NULL,      -- 'TIME' | 'ASAP'
+      start_at    BIGINT NOT NULL,    -- unix seconds (TIME일 때 사용)
+      status      TEXT NOT NULL,      -- 'RECRUIT' | 'PLAYING' | 'ENDED'
+      max_players INT  NOT NULL DEFAULT 4,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS party_members (
@@ -41,6 +36,13 @@ await pool.query(`
       joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (message_id, user_id)
     );
+  `);
+
+  // ✅ 추가 컬럼: time_text (자유 텍스트 시간 표시용)
+  // 기존 데이터 보존: ALTER TABLE IF NOT EXISTS 패턴으로 안전하게 추가
+  await pool.query(`
+    ALTER TABLE parties
+    ADD COLUMN IF NOT EXISTS time_text TEXT DEFAULT '';
   `);
 }
 
@@ -53,36 +55,29 @@ async function upsertParty(party) {
     kind,
     title,
     party_note = "",
-    time_text = "",
-    status = "RECRUIT",
+    mode,
+    start_at,
+    status,
     max_players = 4,
-
-    // ✅ 구 DB 스키마 호환 (NOT NULL)
-    mode = "TEXT",
-    start_at = 0,
+    time_text = "",
   } = party;
 
   await pool.query(
     `
-    INSERT INTO parties (
-      message_id, channel_id, guild_id, owner_id,
-      kind, title, party_note, time_text,
-      mode, start_at,
-      status, max_players
-    )
+    INSERT INTO parties (message_id, channel_id, guild_id, owner_id, kind, title, party_note, mode, start_at, status, max_players, time_text)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     ON CONFLICT (message_id) DO UPDATE SET
-      channel_id  = EXCLUDED.channel_id,
-      guild_id    = EXCLUDED.guild_id,
-      owner_id    = EXCLUDED.owner_id,
-      kind        = EXCLUDED.kind,
-      title       = EXCLUDED.title,
-      party_note  = EXCLUDED.party_note,
-      time_text   = EXCLUDED.time_text,
-      mode        = EXCLUDED.mode,
-      start_at    = EXCLUDED.start_at,
-      status      = EXCLUDED.status,
-      max_players = EXCLUDED.max_players
+      channel_id   = EXCLUDED.channel_id,
+      guild_id     = EXCLUDED.guild_id,
+      owner_id     = EXCLUDED.owner_id,
+      kind         = EXCLUDED.kind,
+      title        = EXCLUDED.title,
+      party_note   = EXCLUDED.party_note,
+      mode         = EXCLUDED.mode,
+      start_at     = EXCLUDED.start_at,
+      status       = EXCLUDED.status,
+      max_players  = EXCLUDED.max_players,
+      time_text    = EXCLUDED.time_text
     `,
     [
       message_id,
@@ -92,15 +87,14 @@ async function upsertParty(party) {
       kind,
       title,
       party_note,
-      time_text,
       mode,
       start_at,
       status,
       max_players,
+      time_text,
     ]
   );
 }
-
 
 async function setMemberNote(messageId, userId, note = "") {
   await pool.query(
@@ -136,7 +130,7 @@ async function getParty(messageId) {
 }
 
 module.exports = {
-  initDb,          // ✅ 이게 반드시 있어야 함
+  initDb,
   upsertParty,
   getParty,
   setMemberNote,
