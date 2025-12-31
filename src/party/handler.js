@@ -1,5 +1,3 @@
-console.log("INT", interaction.customId, "MID", interaction.message?.id);
-
 
 // src/party/handler.js
 const { InteractionType } = require("discord.js");
@@ -755,4 +753,5 @@ module.exports = {
   syncOrderMessage,
   runPartyTick,
 };
+
 
