@@ -46,7 +46,6 @@ async function ackModal(interaction) {
   await interaction.deferReply({ ephemeral: true }).catch(() => {});
 }
 async function doneModal(interaction) {
-  await interaction.deleteReply().catch(() => {});
 }
 
 /**
@@ -235,7 +234,6 @@ async function handleParty(interaction) {
   // 종류 선택 → 모달 + 에페메랄 즉시 삭제
   if (interaction.isStringSelectMenu() && interaction.customId === "party:create:kind") {
     const kind = interaction.values[0];
-    await ackUpdate(interaction);
     await interaction.showModal(createPartyModal(kind)).catch(() => {});
     await interaction.deleteReply().catch(() => {});
     return true;
