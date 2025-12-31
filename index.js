@@ -1,5 +1,3 @@
-require("dotenv").config();
-
 const http = require("http");
 const {
   Client,
@@ -1104,3 +1102,4 @@ http
   .listen(PORT, () => {
     console.log(`🌐 Dummy web server running on port ${PORT}`);
   });
+
