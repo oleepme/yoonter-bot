@@ -452,13 +452,37 @@ async function handleParty(interaction) {
       return true;
     }
 
-    // 종료(참가자면 가능)
-    if (interaction.customId === "party:end") {
-      const isMember = (party.members || []).some((m) => m.user_id === interaction.user.id);
-      if (!isMember && interaction.user.id !== party.owner_id) {
-        await interaction.reply({ content: "참가자만 종료할 수 있습니다.", ephemeral: true });
-        return true;
-      }
+// 종료(삭제 권한 없으니 "종료 상태 고정 + 버튼 제거"로 처리)
+if (interaction.customId === "party:end") {
+  const isMember = (party.members || []).some((m) => m.user_id === interaction.user.id);
+  if (!isMember && interaction.user.id !== party.owner_id) {
+    await interaction.reply({ content: "참가자만 종료할 수 있습니다.", ephemeral: true });
+    return true;
+  }
+
+  // DB에서 파티 삭제(= 더 이상 파티로 취급 안 함)
+  await deleteParty(party.message_id);
+
+  // 메시지는 삭제 못하니, 파티 메시지를 "종료"로 고정 + 버튼 제거
+  const endedEmbed = new EmbedBuilder()
+    .setColor(0x95a5a6)
+    .setTitle("⚫ 종료")
+    .setDescription(`🎮 ${party.title || "파티"}`)
+    .addFields(
+      { name: "특이사항", value: party.party_note?.trim() ? party.party_note.trim() : "(없음)", inline: true },
+      {
+        name: "시간",
+        value: party.mode === "ASAP" ? "⚡ 모이면 바로 시작" : `🕒 <t:${Number(party.start_at)}:F>`,
+        inline: true,
+      },
+      { name: "참가자", value: "(종료됨)", inline: false }
+    );
+
+  await interaction.message.edit({ embeds: [endedEmbed], components: [] }).catch(() => {});
+  await interaction.reply({ content: "⚫ 파티를 종료했습니다. (삭제 권한이 없어 메시지를 종료 상태로 고정합니다)", ephemeral: true });
+  return true;
+}
+
 
       await deleteParty(party.message_id);
       await interaction.reply({ content: "⚫ 파티를 종료하고 메시지를 삭제합니다.", ephemeral: true });
