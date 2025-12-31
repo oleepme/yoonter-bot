@@ -10,21 +10,25 @@ const pool = new Pool({
 });
 
 async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS parties (
-      message_id  TEXT PRIMARY KEY,
-      channel_id  TEXT NOT NULL,
-      guild_id    TEXT NOT NULL,
-      owner_id    TEXT NOT NULL,
-      kind        TEXT NOT NULL,      -- 'GAME'|'MOVIE'|'CHAT'|'MUSIC'
-      title       TEXT NOT NULL,      -- GAME/MOVIE는 필수, CHAT/MUSIC는 '' 가능
-      party_note  TEXT DEFAULT '',
-      time_text   TEXT DEFAULT '',    -- ✅ 시간은 문자열 저장
-      status      TEXT NOT NULL,      -- 'RECRUIT' | 'PLAYING' | 'ENDED'
-      max_players INT  NOT NULL DEFAULT 4,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS parties (
+    message_id  TEXT PRIMARY KEY,
+    channel_id  TEXT NOT NULL,
+    guild_id    TEXT NOT NULL,
+    owner_id    TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    party_note  TEXT DEFAULT '',
+    time_text   TEXT DEFAULT '',
+
+    mode        TEXT NOT NULL,      -- ✅ 유지
+    start_at    BIGINT NOT NULL,    -- ✅ 유지
+
+    status      TEXT NOT NULL,
+    max_players INT  NOT NULL DEFAULT 4,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+`);
 
   // 기존 테이블에 time_text 없던 경우 대비(안전)
   await pool.query(`ALTER TABLE parties ADD COLUMN IF NOT EXISTS time_text TEXT DEFAULT ''`);
@@ -52,12 +56,21 @@ async function upsertParty(party) {
     time_text = "",
     status = "RECRUIT",
     max_players = 4,
+
+    // ✅ 구 DB 스키마 호환 (NOT NULL)
+    mode = "TEXT",
+    start_at = 0,
   } = party;
 
   await pool.query(
     `
-    INSERT INTO parties (message_id, channel_id, guild_id, owner_id, kind, title, party_note, time_text, status, max_players)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    INSERT INTO parties (
+      message_id, channel_id, guild_id, owner_id,
+      kind, title, party_note, time_text,
+      mode, start_at,
+      status, max_players
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     ON CONFLICT (message_id) DO UPDATE SET
       channel_id  = EXCLUDED.channel_id,
       guild_id    = EXCLUDED.guild_id,
@@ -66,12 +79,28 @@ async function upsertParty(party) {
       title       = EXCLUDED.title,
       party_note  = EXCLUDED.party_note,
       time_text   = EXCLUDED.time_text,
+      mode        = EXCLUDED.mode,
+      start_at    = EXCLUDED.start_at,
       status      = EXCLUDED.status,
       max_players = EXCLUDED.max_players
     `,
-    [message_id, channel_id, guild_id, owner_id, kind, title, party_note, time_text, status, max_players]
+    [
+      message_id,
+      channel_id,
+      guild_id,
+      owner_id,
+      kind,
+      title,
+      party_note,
+      time_text,
+      mode,
+      start_at,
+      status,
+      max_players,
+    ]
   );
 }
+
 
 async function setMemberNote(messageId, userId, note = "") {
   await pool.query(
