@@ -31,14 +31,10 @@ function partyBoardEmbed() {
   return new EmbedBuilder()
     .setColor(0x95a5a6)
     .setTitle("📌 파티 현황판")
-    .setDescription(
-      ["아래에서 파티 종류를 눌러 바로 생성합니다.", "파티는 임베드 1개 메시지로 운영됩니다."].join("\n")
-    )
-    // ✅ 이 footer가 있어야 index.js ensurePinnedMessage가 “같은 현황판”을 인식하고 1개만 유지함
+    .setDescription(["아래에서 파티 종류를 눌러 바로 생성합니다.", "파티는 임베드 1개 메시지로 운영됩니다."].join("\n"))
     .setFooter({ text: "DDG|partyboard|v1" });
 }
 
-// ✅ 현황판에 종류 버튼 4개
 function partyBoardComponents() {
   return [
     new ActionRowBuilder().addComponents(
@@ -90,8 +86,11 @@ function createPartyModal(kind) {
   return modal;
 }
 
-function editPartyModal(msgId, kind, party) {
-  const modal = new ModalBuilder().setCustomId(`party:edit:submit:${msgId}`).setTitle(`파티 수정 (${kindLabel(kind)})`);
+// ✅ 파티 정보 수정 모달(파티장/운영진 공용) — 인원 추가/제거 없음
+function editPartyModal(msgId, party /* isAdminEdit unused but kept for compatibility */, _isAdminEdit) {
+  const kind = party?.kind || "GAME";
+
+  const modal = new ModalBuilder().setCustomId(`party:edit:submit:${msgId}`).setTitle("파티 수정");
 
   const title = new TextInputBuilder()
     .setCustomId("title")
@@ -134,6 +133,21 @@ function editPartyModal(msgId, kind, party) {
   return modal;
 }
 
+// ✅ 운영진 전용 인원 관리 모달(슬롯 텍스트 1칸)
+function manageMembersModal(msgId, slotsText) {
+  const modal = new ModalBuilder().setCustomId(`party:manage:submit:${msgId}`).setTitle("인원 관리(운영진)");
+
+  const input = new TextInputBuilder()
+    .setCustomId("slots_text")
+    .setLabel("슬롯 편집 (적으면 추가 / 지우면 제거)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setValue((slotsText ?? "").toString().slice(0, 3900));
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
 function joinNoteModal(msgId) {
   const modal = new ModalBuilder().setCustomId(`party:joinnote:${msgId}`).setTitle("참가/비고");
   const input = new TextInputBuilder()
@@ -149,29 +163,10 @@ function waitModal(msgId) {
   const modal = new ModalBuilder().setCustomId(`party:wait:submit:${msgId}`).setTitle("대기 등록");
   const input = new TextInputBuilder()
     .setCustomId("note")
-    .setLabel("대기 코멘트(선택) 예: 밥먹고 자리나면")
+    .setLabel("대기 코멘트(선택)")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
   modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
-function adminForceJoinModal(msgId) {
-  const modal = new ModalBuilder().setCustomId(`party:admin:forcejoin:${msgId}`).setTitle("운영진: 강제 참가");
-
-  const users = new TextInputBuilder()
-    .setCustomId("users")
-    .setLabel("서버별명/멘션/ID 여러 개 (줄바꿈/쉼표로 구분)")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true);
-
-  const mode = new TextInputBuilder()
-    .setCustomId("mode")
-    .setLabel("mode: add 또는 replace (기본 add)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(users), new ActionRowBuilder().addComponents(mode));
   return modal;
 }
 
@@ -185,7 +180,7 @@ function partyActionRows() {
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("party:edit").setLabel("수정").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("party:admin").setLabel("관리(운영진)").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("party:manage").setLabel("인원 관리").setStyle(ButtonStyle.Secondary), // ✅ 운영진 전용(핸들러에서 권한 체크)
       new ButtonBuilder().setCustomId("party:start").setLabel("시작").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("party:end").setLabel("종료").setStyle(ButtonStyle.Danger),
     ),
@@ -201,17 +196,14 @@ function endedActionRow() {
 module.exports = {
   partyBoardEmbed,
   partyBoardComponents,
-
   createPartyModal,
   editPartyModal,
+  manageMembersModal,
   joinNoteModal,
   waitModal,
-  adminForceJoinModal,
-
   partyActionRows,
   endedActionRow,
-
-  isUnlimitedKind,
   kindLabel,
   kindIcon,
+  isUnlimitedKind,
 };
