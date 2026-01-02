@@ -192,7 +192,14 @@ async function refreshPartyMessage(guild, party) {
 
   const embed = buildPartyEmbed(party);
   const components = party.status === "ENDED" ? [endedActionRow()] : partyActionRows();
-  await msg.edit({ embeds: [embed], components }).catch(() => {});
+  await msg
+    .edit({
+      embeds: [embed],
+      components,
+      allowedMentions: { parse: ["users"] }, // ✅ 유저 멘션 파싱 허용
+    })
+    .catch(() => {});
+
 }
 
 async function endParty(guild, party, reason, message) {
@@ -329,7 +336,12 @@ async function handleParty(interaction) {
       }
 
       // embed-only 생성
-      const msg = await board.send({ embeds: [buildCreatingEmbed(kind)], components: [] });
+      const msg = await board.send({
+        embeds: [buildCreatingEmbed(kind)],
+        components: [],
+        allowedMentions: { parse: ["users"] }, // ✅ 유저 멘션 파싱 허용
+      });
+
 
       await upsertParty({
         message_id: msg.id,
