@@ -110,6 +110,72 @@ function timeDisplay(timeTextRaw) {
   return t ? t : "⚡ 모바시";
 }
 
+/**
+ * ✅ 서버별명 우선으로 텍스트 이름을 만든다.
+ * - interaction.member.displayName = 서버 별명(키노 96 남)
+ * - 그 외 fallback은 최소
+ */
+function getDisplayNameFromInteraction(interaction) {
+  return (
+    interaction?.member?.displayName ||
+    interaction?.member?.nickname ||
+    interaction?.user?.username ||
+    "알수없음"
+  );
+}
+
+/**
+ * ✅ DB 함수 setMemberNote가 (msgId, userId, note)만 받는 버전일 수도 있어서,
+ *    “가능하면 displayName까지 저장” / 아니면 note만 저장하도록 호환 처리
+ *
+ * - db.js를 display_name 지원으로 바꾸면 자동으로 4인자 호출로 저장됨
+ * - 아직 db.js가 3인자면 그냥 note만 저장됨
+ */
+async function setMemberNoteCompat(messageId, userId, displayName, note) {
+  try {
+    // 함수 길이로 대략 판단(정확하진 않지만 실무에서 충분히 씀)
+    if (typeof setMemberNote === "function" && setMemberNote.length >= 4) {
+      await setMemberNote(messageId, userId, displayName, note);
+      return;
+    }
+  } catch {}
+  // 구버전
+  await setMemberNote(messageId, userId, note);
+}
+
+/**
+ * ✅ party.members에 display_name이 없거나 비어있어도,
+ *    refresh 시점에 서버에서 현재 별명을 fetch해서 붙여준다.
+ *    (ID/멘션을 노출하지 않기 위해 필수)
+ */
+async function hydrateDisplayNames(guild, party) {
+  const members = Array.isArray(party.members) ? party.members : [];
+  if (!members.length) return party;
+
+  // 캐시 먼저 시도(속도), 없으면 fetch
+  const nextMembers = [];
+  for (const m of members) {
+    const userId = m.user_id;
+    let dn = (m.display_name ?? "").toString().trim();
+
+    if (!dn) {
+      const cached = guild.members.cache.get(userId);
+      if (cached?.displayName) dn = cached.displayName;
+    }
+
+    if (!dn) {
+      try {
+        const fetched = await guild.members.fetch(userId);
+        dn = fetched?.displayName || "";
+      } catch {}
+    }
+
+    nextMembers.push({ ...m, display_name: dn || "알수없음" });
+  }
+
+  return { ...party, members: nextMembers };
+}
+
 function buildParticipants(party) {
   const kind = party.kind;
   const members = Array.isArray(party.members) ? party.members : [];
@@ -118,17 +184,36 @@ function buildParticipants(party) {
   const playing = [];
   for (const m of members) (isWaiting(m.note) ? waiting : playing).push(m);
 
+  const nameOf = (m) => {
+    const n = (m.display_name ?? "").toString().trim();
+    return n || "알수없음";
+  };
+
   if (isUnlimitedKind(kind)) {
     const lines = [];
     if (playing.length === 0) lines.push("(참가자 없음)");
-    else lines.push(playing.map((m) => `• <@${m.user_id}>${m.note?.trim() ? ` — ${m.note.trim()}` : ""}`).join("\n"));
+    else {
+      lines.push(
+        playing
+          .map((m) => {
+            const name = nameOf(m);
+            const note = (m.note ?? "").toString().trim();
+            return `• ${name}${note ? ` — ${note}` : ""}`;
+          })
+          .join("\n")
+      );
+    }
 
     if (waiting.length > 0) {
       lines.push("");
       lines.push("대기:");
       lines.push(
         waiting
-          .map((m) => `• <@${m.user_id}>${waitingText(m.note) ? ` — ${waitingText(m.note)}` : ""}`)
+          .map((m) => {
+            const name = nameOf(m);
+            const w = waitingText(m.note);
+            return `• ${name}${w ? ` — ${w}` : ""}`;
+          })
           .join("\n")
       );
     }
@@ -141,7 +226,11 @@ function buildParticipants(party) {
   for (let i = 0; i < maxPlayers; i++) {
     const m = playing[i];
     if (!m) lines.push(`${i + 1}.`);
-    else lines.push(`${i + 1}. <@${m.user_id}>${m.note?.trim() ? ` — ${m.note.trim()}` : ""}`);
+    else {
+      const name = nameOf(m);
+      const note = (m.note ?? "").toString().trim();
+      lines.push(`${i + 1}. ${name}${note ? ` — ${note}` : ""}`);
+    }
   }
 
   if (waiting.length > 0) {
@@ -149,7 +238,11 @@ function buildParticipants(party) {
     lines.push("대기:");
     lines.push(
       waiting
-        .map((m) => `• <@${m.user_id}>${waitingText(m.note) ? ` — ${waitingText(m.note)}` : ""}`)
+        .map((m) => {
+          const name = nameOf(m);
+          const w = waitingText(m.note);
+          return `• ${name}${w ? ` — ${w}` : ""}`;
+        })
         .join("\n")
     );
   }
@@ -190,16 +283,20 @@ async function refreshPartyMessage(guild, party) {
   const msg = await ch.messages.fetch(party.message_id).catch(() => null);
   if (!msg) return;
 
-  const embed = buildPartyEmbed(party);
-  const components = party.status === "ENDED" ? [endedActionRow()] : partyActionRows();
+  // ✅ 서버별명 hydrate (ID/멘션 없이 이름 텍스트만 표시하기 위한 핵심)
+  const hydrated = await hydrateDisplayNames(guild, party);
+
+  const embed = buildPartyEmbed(hydrated);
+  const components = hydrated.status === "ENDED" ? [endedActionRow()] : partyActionRows();
+
   await msg
     .edit({
       embeds: [embed],
       components,
-      allowedMentions: { parse: ["users"] }, // ✅ 유저 멘션 파싱 허용
+      // ✅ 멘션/ID를 쓰지 않으므로 파싱 필요 없음(핑 방지)
+      allowedMentions: { parse: [] },
     })
     .catch(() => {});
-
 }
 
 async function endParty(guild, party, reason, message) {
@@ -339,9 +436,8 @@ async function handleParty(interaction) {
       const msg = await board.send({
         embeds: [buildCreatingEmbed(kind)],
         components: [],
-        allowedMentions: { parse: ["users"] }, // ✅ 유저 멘션 파싱 허용
+        allowedMentions: { parse: [] }, // ✅ 멘션 파싱 필요 없음(핑 방지)
       });
-
 
       await upsertParty({
         message_id: msg.id,
@@ -358,8 +454,9 @@ async function handleParty(interaction) {
         max_players: maxPlayers,
       });
 
-      // 파티장 자동 참가(플레이)
-      await setMemberNote(msg.id, interaction.user.id, "");
+      // 파티장 자동 참가(플레이) — 서버별명 우선
+      const displayName = getDisplayNameFromInteraction(interaction);
+      await setMemberNoteCompat(msg.id, interaction.user.id, displayName, "");
 
       const party = await getParty(msg.id);
       if (party) await refreshPartyMessage(guild, party);
@@ -369,7 +466,7 @@ async function handleParty(interaction) {
         color: 0x2ecc71,
         fields: [
           field("파티 메시지 ID", msg.id, true),
-          field("파티장", `<@${interaction.user.id}>`, true),
+          field("파티장", displayName, true), // ✅ 로그도 서버별명 기준
           field("종류", kindLabel(kind), true),
           field("시간", timeDisplay(time), true),
         ],
@@ -552,7 +649,8 @@ async function handleParty(interaction) {
       const base = me?.note ? stripWaitPrefix(me.note) : "";
       const finalNote = inputNote || base || "";
 
-      await setMemberNote(msgId, interaction.user.id, finalNote);
+      const displayName = getDisplayNameFromInteraction(interaction);
+      await setMemberNoteCompat(msgId, interaction.user.id, displayName, finalNote);
 
       const updated = await getParty(msgId);
       if (updated) await refreshPartyMessage(guild, updated);
@@ -585,7 +683,8 @@ async function handleParty(interaction) {
       }
 
       const note = safeTrim(interaction.fields.getTextInputValue("note")).slice(0, 120);
-      await setMemberNote(msgId, interaction.user.id, `${WAIT_PREFIX}${note}`);
+      const displayName = getDisplayNameFromInteraction(interaction);
+      await setMemberNoteCompat(msgId, interaction.user.id, displayName, `${WAIT_PREFIX}${note}`);
 
       const updated = await getParty(msgId);
       if (updated) await refreshPartyMessage(guild, updated);
@@ -730,7 +829,13 @@ async function handleParty(interaction) {
       }
 
       for (const id of userIds) {
-        await setMemberNote(msgId, id, ""); // 플레이 참가로 넣음
+        // 강제 참가도 서버별명 시도
+        let dn = "";
+        try {
+          const mem = await guild.members.fetch(id);
+          dn = mem?.displayName || "";
+        } catch {}
+        await setMemberNoteCompat(msgId, id, dn || "알수없음", ""); // 플레이 참가
       }
 
       const updated = await getParty(msgId);

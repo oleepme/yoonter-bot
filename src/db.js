@@ -10,6 +10,7 @@ const pool = new Pool({
 });
 
 async function initDb() {
+  // parties
   await pool.query(`
     CREATE TABLE IF NOT EXISTS parties (
       message_id  TEXT PRIMARY KEY,
@@ -28,18 +29,23 @@ async function initDb() {
     );
   `);
 
+  // party_members
   await pool.query(`
     CREATE TABLE IF NOT EXISTS party_members (
-      message_id TEXT NOT NULL,
-      user_id    TEXT NOT NULL,
-      note       TEXT DEFAULT '',
-      joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      message_id    TEXT NOT NULL,
+      user_id       TEXT NOT NULL,
+      display_name  TEXT DEFAULT '',
+      note          TEXT DEFAULT '',
+      joined_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (message_id, user_id)
     );
   `);
 
-  // 기존 DB에 time_text 컬럼 없을 수 있어서 안전하게 추가
+  // ✅ 기존 운영 DB에 컬럼이 없을 수 있으니 안전하게 추가(유실 없음)
   await pool.query(`ALTER TABLE parties ADD COLUMN IF NOT EXISTS time_text TEXT DEFAULT '';`);
+
+  // ✅ 기존 운영 DB에 display_name 컬럼이 없을 수 있으니 안전하게 추가(유실 없음)
+  await pool.query(`ALTER TABLE party_members ADD COLUMN IF NOT EXISTS display_name TEXT DEFAULT '';`);
 }
 
 async function upsertParty(party) {
@@ -92,15 +98,21 @@ async function upsertParty(party) {
   );
 }
 
-async function setMemberNote(messageId, userId, note = "") {
+/**
+ * ✅ 서버별명(display_name) + 비고(note) 저장
+ * - handler.js에서 (messageId, userId, displayName, note)로 호출
+ * - 운영 중 별명이 바뀌면 최신 displayName으로 덮어써짐
+ */
+async function setMemberNote(messageId, userId, displayName, note = "") {
   await pool.query(
     `
-    INSERT INTO party_members (message_id, user_id, note)
-    VALUES ($1,$2,$3)
+    INSERT INTO party_members (message_id, user_id, display_name, note)
+    VALUES ($1,$2,$3,$4)
     ON CONFLICT (message_id, user_id) DO UPDATE SET
-      note = EXCLUDED.note
+      display_name = EXCLUDED.display_name,
+      note         = EXCLUDED.note
     `,
-    [messageId, userId, note]
+    [messageId, userId, (displayName ?? "").toString(), note]
   );
 }
 
@@ -117,8 +129,9 @@ async function getParty(messageId) {
   const p = await pool.query(`SELECT * FROM parties WHERE message_id=$1`, [messageId]);
   if (!p.rows.length) return null;
 
+  // ✅ display_name 포함해서 가져오기
   const m = await pool.query(
-    `SELECT user_id, note FROM party_members WHERE message_id=$1 ORDER BY joined_at ASC`,
+    `SELECT user_id, display_name, note FROM party_members WHERE message_id=$1 ORDER BY joined_at ASC`,
     [messageId]
   );
 
