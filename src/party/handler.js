@@ -42,14 +42,19 @@ async function ackUpdate(interaction) {
 }
 
 async function ackModal(interaction) {
+  // ModalSubmit은 3초 내 응답이 필요하므로 deferReply로 ACK만 잡습니다.
+  // 성공 시에는 doneModal()에서 deleteReply로 흔적을 없앱니다.
   if (!interaction.deferred && !interaction.replied) {
-    await interaction.reply({ content: OK_BLANK, ephemeral: true }).catch(() => {});
+    await interaction.deferReply({ ephemeral: true }).catch(() => {});
   }
 }
 
 async function doneModal(interaction) {
+  // 성공 시: 에페메랄 응답을 삭제해서 “빈 메시지”가 남지 않게 합니다.
   try {
-    await interaction.editReply({ content: OK_BLANK }).catch(() => {});
+    if (interaction.deferred || interaction.replied) {
+      await interaction.deleteReply().catch(() => {});
+    }
   } catch {}
 }
 
@@ -58,7 +63,7 @@ async function ephemeralError(interaction, content) {
     if (interaction.type === InteractionType.ModalSubmit) {
       await ackModal(interaction);
       await interaction.editReply({ content }).catch(() => {});
-      setTimeout(() => interaction.editReply({ content: OK_BLANK }).catch(() => {}), ERROR_EPHEMERAL_MS);
+      setTimeout(() => interaction.deleteReply().catch(() => {}), ERROR_EPHEMERAL_MS);
       return;
     }
 
